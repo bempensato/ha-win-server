@@ -23,7 +23,22 @@
     </application>
   </compatibility>
 
-  <!-- High DPI mode is set via the ApplicationHighDpiMode project property
-       instead (the SDK-recommended path for WinForms); duplicating it here
-       triggers build warning WFO0003. -->
+  <!-- Declared here, not just via ApplicationHighDpiMode: that project
+       property only reaches the SDK's own auto-generated manifest, and this
+       project overrides it with this hand-written one (for the trustInfo/
+       supportedOS entries above), which the SDK does NOT patch in turn -
+       confirmed by extracting the RT_MANIFEST resource from a built exe,
+       which came back with no windowsSettings element at all. Without this,
+       the process falls back to whatever Application.SetHighDpiMode() can
+       still achieve purely at runtime, which is the less reliable path on
+       Windows 10 and is what let every hand-built dialog in Menu/ render at
+       the wrong size instead of properly per-monitor-DPI-scaled. Redundant
+       with the ApplicationHighDpiMode property (WFO0003, suppressed in the
+       csproj) but not conflicting - SetHighDpiMode() is a documented no-op
+       once the manifest has already set this. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
 </assembly>

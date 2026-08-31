@@ -242,7 +242,8 @@ public sealed class TrayContext : ApplicationContext
                 if (!installResult.Succeeded)
                 {
                     window.ShowRetryableFailure(
-                        "Failed to install the WSL distro. See the log above, then click Retry.");
+                        "Failed to install the WSL distro. See the log above, then click Retry." +
+                        WslServiceFailureGuidance(installResult));
                     return;
                 }
             }
@@ -256,7 +257,8 @@ public sealed class TrayContext : ApplicationContext
             if (!bootstrapResult.Succeeded)
             {
                 window.ShowRetryableFailure(
-                    "Failed to set up podman inside WSL. See the log above, then click Retry.");
+                    "Failed to set up podman inside WSL. See the log above, then click Retry." +
+                    WslServiceFailureGuidance(bootstrapResult));
                 return;
             }
 
@@ -300,6 +302,38 @@ public sealed class TrayContext : ApplicationContext
             _isBusy = false;
             RefreshTrayIcon();
         }
+    }
+
+    /// <summary>
+    /// "Wsl/Service/CreateInstance/E_FAIL" (and its relatives) mean the WSL
+    /// service itself could not create or start ANY distro right now - not
+    /// that this particular one is missing. This app has no way to fix that
+    /// (it needs admin rights it deliberately never asks for), but the
+    /// generic "failed to install" message otherwise reads exactly like the
+    /// app is trying to reinstall a distro that is already there, which is
+    /// confusing on a machine that has run this before. Detected from the
+    /// process output rather than the exit code, since wsl.exe still exits
+    /// non-zero for both this and an ordinary install failure.
+    /// </summary>
+    private static string WslServiceFailureGuidance(ProcResult result)
+    {
+        var output = result.StdErr + result.StdOut;
+        if (!output.Contains("CreateInstance", StringComparison.OrdinalIgnoreCase)
+            && !output.Contains("E_FAIL", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return "\n\nThis specific error usually means the WSL service can't create or start any distro " +
+               "right now - not that this one is missing, even if it looks that way. Common causes: a " +
+               "Windows update left \"Virtual Machine Platform\" or \"Windows Subsystem for Linux\" disabled, " +
+               "WSL itself is out of date, or a pending restart. Try, in order, from an elevated Command " +
+               "Prompt or PowerShell:\n" +
+               "  1. wsl --shutdown\n" +
+               "  2. wsl --update\n" +
+               "  3. Restart Windows, then reopen this app and click Retry.\n" +
+               "If it still fails, check optionalfeatures.exe has both \"Windows Subsystem for Linux\" and " +
+               "\"Virtual Machine Platform\" checked.";
     }
 
     // ---- menu / tray icon ----------------------------------------------------
