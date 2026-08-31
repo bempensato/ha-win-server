@@ -111,6 +111,13 @@ public sealed class SetupWindow : Form
             _progressBar.Value = 0;
             _retryButton.Visible = retryable;
             _closeButton.Enabled = true;
+
+            // _statusLabel is a single fixed-height line - a long summary
+            // (a raw stderr dump, a chain of Cloudflare error messages) is
+            // silently clipped there with nothing on screen to say more was
+            // cut off. The log box is scrollable and already visible, so the
+            // full text always lands there too, readable in full.
+            AppendLine("FAILED: " + summary);
         });
     }
 
@@ -124,6 +131,8 @@ public sealed class SetupWindow : Form
             _progressBar.Value = 100;
             _retryButton.Visible = false;
             _closeButton.Enabled = true;
+
+            AppendLine(summary);
         });
     }
 

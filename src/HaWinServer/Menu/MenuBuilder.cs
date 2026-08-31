@@ -185,6 +185,9 @@ public static class MenuBuilder
         }
 
         target.Add(new ToolStripSeparator());
+        target.Add(BuildTunnelSubmenu(ctx, busy));
+
+        target.Add(new ToolStripSeparator());
         target.Add(new ToolStripMenuItem("View HA Win Server Log", null, (_, _) => ctx.ViewAppLog()));
 
         var runAtLogin = new ToolStripMenuItem("Run at Login", null, (_, _) => ctx.ToggleRunAtLogin())
@@ -245,6 +248,99 @@ public static class MenuBuilder
         };
         root.DropDownItems.Add(localhostOnly);
         root.DropDownItems.Add(allInterfaces);
+
+        root.DropDownItems.Add(new ToolStripSeparator());
+        BuildRemoteAccessItems(root.DropDownItems, ctx, instance, installed, busy);
+
+        return root;
+    }
+
+    /// <summary>
+    /// The Cloudflare Tunnel half of the Network submenu. Two shapes:
+    /// nothing set up yet (just "Set Up Remote Access..."), or a hostname
+    /// already configured (status line, Copy Public URL, Change Hostname,
+    /// the Home Assistant proxy settings dialog, and Disable).
+    /// </summary>
+    private static void BuildRemoteAccessItems(
+        ToolStripItemCollection target, TrayContext ctx, HassInstance instance, bool installed, bool busy)
+    {
+        var settings = instance.Settings;
+        var canEdit = installed && !busy;
+
+        target.Add(new ToolStripMenuItem(ctx.RemoteAccessStatusLabel(instance)) { Enabled = false });
+
+        if (settings.TunnelEnabled && !string.IsNullOrEmpty(settings.Hostname))
+        {
+            target.Add(new ToolStripMenuItem("Copy Public URL", null, (_, _) => ctx.CopyPublicUrl(instance))
+            {
+                Enabled = installed,
+            });
+            target.Add(new ToolStripMenuItem(
+                "Change Hostname...", null, async (_, _) => await ctx.SetUpRemoteAccessAsync(instance))
+            {
+                Enabled = canEdit,
+            });
+            target.Add(new ToolStripMenuItem(
+                "Home Assistant Proxy Settings...", null, async (_, _) => await ctx.ShowProxyConfigDialogAsync(instance))
+            {
+                Enabled = canEdit,
+            });
+            if (settings.ProxyConfigApplied)
+            {
+                target.Add(new ToolStripMenuItem(
+                    "Remove Home Assistant Proxy Settings", null, async (_, _) => await ctx.RemoveProxyConfigAsync(instance))
+                {
+                    Enabled = canEdit,
+                });
+            }
+            target.Add(new ToolStripMenuItem(
+                "Disable Remote Access...", null, async (_, _) => await ctx.DisableRemoteAccessAsync(instance))
+            {
+                Enabled = canEdit,
+            });
+        }
+        else
+        {
+            target.Add(new ToolStripMenuItem(
+                "Set Up Remote Access...", null, async (_, _) => await ctx.SetUpRemoteAccessAsync(instance))
+            {
+                Enabled = canEdit,
+            });
+        }
+    }
+
+    /// <summary>Machine-level connector status and maintenance actions - one tunnel serves every instance, see TunnelSupervisor.</summary>
+    private static ToolStripMenuItem BuildTunnelSubmenu(TrayContext ctx, bool busy)
+    {
+        var root = new ToolStripMenuItem("Cloudflare Tunnel");
+        var configured = ctx.RootSettings.Tunnel.TunnelId is not null;
+
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            configured ? $"Status: {TrayContext.TunnelStateLabel(ctx.TunnelState)}" : "Not set up yet - use an instance's Network menu")
+        { Enabled = false });
+
+        root.DropDownItems.Add(new ToolStripSeparator());
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Restart Connector", null, async (_, _) => await ctx.RestartTunnelAsync())
+        {
+            Enabled = configured && !busy,
+        });
+        root.DropDownItems.Add(new ToolStripMenuItem("View cloudflared Log", null, (_, _) => ctx.ViewTunnelLog()));
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Remove Tunnel...", null, async (_, _) => await ctx.RemoveTunnelAsync())
+        {
+            Enabled = configured && !busy,
+        });
+
+        root.DropDownItems.Add(new ToolStripSeparator());
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Forget Saved API Token", null, (_, _) => ctx.ForgetSavedApiToken())
+        {
+            // Independent of whether a tunnel exists yet - a token can be
+            // saved from the setup wizard before any instance has remote
+            // access configured.
+            Enabled = SecretStore.HasApiToken() && !busy,
+        });
 
         return root;
     }

@@ -28,9 +28,9 @@ Running the exact same `pip install homeassistant` inside a plain Ubuntu WSL dis
 
 1. Checks that WSL itself is available (`wsl --status`). If it isn't, shows a message explaining that an admin needs to run `wsl --install` once - this app stops here rather than attempting anything that would need elevation.
 2. Installs a dedicated WSL distro (`wsl --install Ubuntu-24.04 --no-launch`) if it isn't already present. This is a normal, non-elevated per-user operation once the WSL platform itself is enabled.
-3. Inside that distro, as root (WSL's root has no relationship to Windows admin rights - it's just a Linux user in an isolated VM, no UAC, no password): installs Python 3.14 via the [deadsnakes PPA](https://launchpad.net/~deadsnakes/+archive/ubuntu/ppa) (Ubuntu 24.04's own repos only go up to 3.12) plus a C/C++ toolchain (`build-essential`, for any optional dependency that needs to compile - a plain `apt install`, no MSVC Build Tools dance), then creates a venv and `pip install`s `homeassistant` into it.
-4. Generates a default `configuration.yaml` (and its companion `secrets.yaml`/`automations.yaml`/`scripts.yaml`/`scenes.yaml`) matching exactly what Home Assistant's own normal startup would create, then edits a small marked block inside it to set the port and network binding you've configured.
-5. Starts Home Assistant and opens the web UI once it responds.
+3. Inside that distro, as root (WSL's root has no relationship to Windows admin rights - it's just a Linux user in an isolated VM, no UAC, no password): installs `podman` via a plain `apt install` if it isn't already present.
+4. Pulls Home Assistant's official Container image (`ghcr.io/home-assistant/home-assistant:stable`) and pins the first instance to the concrete version that tag currently resolves to - see "Instances" below for why a moving tag is never left on an instance.
+5. Starts the container and opens the web UI once it responds.
 
 All of this is visible, line by line, in a progress window while it runs. It's idempotent - if something fails partway (no network, WSL install blocked, etc.) you get a **Retry** button and the app picks up from whatever step didn't finish yet.
 
@@ -79,9 +79,14 @@ If a device is assigned but not currently attached - the normal state after a Wi
 
 ```
 %LOCALAPPDATA%\HaWinServer\
-  settings.json          the instance list: id, name, port, bind address, pinned version
+  settings.json          the instance list (id, name, port, bind address, pinned version, remote-access hostname/ids) and the machine's tunnel config - no secrets
+  secrets.dat            DPAPI-encrypted Cloudflare tunnel run token (see "Security note") - absent until remote access is set up
+  cloudflare-api-token.dat  DPAPI-encrypted Cloudflare API token (see "Security note") - absent until it's used the first time, or after "Forget Saved API Token"
+  bin\
+    cloudflared.exe       downloaded and signature-verified on first use of "Set Up Remote Access..."
   logs\
     hawinserver.log       the tray app's own event log
+    cloudflared.log        the tunnel connector's own log
 
 \\wsl.localhost\Ubuntu-24.04\root\hawinserver\
   config\                 first instance's --config directory (configuration.yaml, home-assistant.log, .storage, recorder DB, ...)
@@ -100,7 +105,7 @@ Per instance:
 - **Status line** - current state (Stopped / Starting / Running / Stopping / Error). The tray icon's color dot shows the worst state across all instances.
 - **Open Web UI** / **Copy LAN URL**
 - **Start** / **Stop** / **Restart**
-- **Network** submenu - listening address, detected LAN URL, port status, Change Port, and Localhost-only vs All-interfaces binding.
+- **Network** submenu - listening address, detected LAN URL, port status, Change Port, Localhost-only vs All-interfaces binding, and remote access (**Set Up Remote Access...** / status, **Copy Public URL**, **Change Hostname...**, **Home Assistant Proxy Settings...**, **Disable Remote Access...** - see "Remote access" above)
 - **Open Config Folder**, **Restore from Backup...**, **View Home Assistant Log**
 - **Assign USB Device...** - Zigbee/Z-Wave coordinators, one instance per stick (see above)
 - **Version**, **Check for Updates...** (compares against PyPI, then pulls and restarts just this instance), **Change Version...** (any version, including ones already downloaded - this is both "promote what I tested" and rollback)
@@ -110,13 +115,16 @@ Per instance:
 Global:
 
 - **Add Instance...**, **Remove Unused Versions...**
+- **Cloudflare Tunnel** submenu - connector status, **Restart Connector**, **View cloudflared Log**, **Remove Tunnel...** (see "Remote access" above)
 - **View HA Win Server Log**
 - **Run at Login** - adds/removes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. No admin, no scheduled task.
 - **About**, **Quit**
 
 ## Process lifetime
 
-Home Assistant runs as `wsl.exe -d Ubuntu-24.04 -u root -- <venv>/bin/hass --config <dir>`, a normal attached Windows child process, assigned to a Job Object configured with kill-on-close - confirmed on a real machine: killing that `wsl.exe` process (crash, Task Manager, whatever) correctly tears down the Linux-side `hass` process too. No orphaned processes, no port left bound on the next launch.
+Home Assistant runs as a podman container inside the WSL distro, supervised by `conmon` independently of this tray app - confirmed on a real machine: killing the `wsl.exe` process that launched `podman run`, or closing the tray app entirely, does **not** stop the container. Instances are started and stopped with explicit `podman run`/`stop` commands and a lightweight polling watchdog notices if a container stops on its own (crash, `podman stop` from outside the app). This means Home Assistant survives the tray app closing or crashing - by design, since it's meant to keep running like any other home server.
+
+The Cloudflare Tunnel connector (`cloudflared.exe`, see "Remote access" below) is the one exception: it runs as a direct, non-elevated Windows child process of this app with no daemon behind it, and is always stopped when the tray app quits.
 
 ## Firewall / LAN access
 
@@ -136,9 +144,29 @@ networkingMode=mirrored
 
 Even with mirrored networking on, actual reachability from another device on the LAN wasn't independently confirmed during development (no second physical device was available to test from) - self-testing from the same machine against its own LAN IP is a known unreliable check (NAT hairpin behavior varies). If LAN access matters to you, verify it from an actual second device after enabling mirrored mode, and check Windows Firewall's inbound rules for the configured port if it doesn't work.
 
+**For access from outside your LAN - the internet, not just other devices at home - see "Remote access" below instead of trying to port-forward.** A Cloudflare Tunnel origin is a plain `http://127.0.0.1:{port}` connection made by a process on the Windows host itself, so none of the WSL2 NAT limitations above apply to it.
+
+## Remote access (Cloudflare Tunnel)
+
+Each instance's **Network** submenu has **Set Up Remote Access...**, which exposes it to the internet through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) - no port forwarding, no public IP, no router configuration. This needs a domain already added to your Cloudflare account and a scoped API token (the wizard links directly to the token creation page and lists exactly which permissions it needs).
+
+One tunnel connector (`cloudflared.exe`) serves the whole machine - every instance with remote access enabled gets its own Public Hostname as a separate ingress rule on that one tunnel, configured entirely on Cloudflare's side. `cloudflared.exe` itself is downloaded (with its Authenticode signature verified before it is ever run) into `%LOCALAPPDATA%\HaWinServer\bin\` the first time it's needed, and runs as a plain child process of this app - no admin, no Windows service, matching every other constraint this app holds itself to. That also means it is **not** independent of the tray app the way a Home Assistant container is: closing the tray app stops the tunnel too.
+
+**Cloudflare Access** (offered, on by default, in the setup wizard) puts a Cloudflare login page - a one-time email PIN, no password to manage - in front of the hostname before Home Assistant's own login is ever reached. Automation webhooks (`/api/webhook/...`) bypass it automatically, since a webhook caller can't complete an interactive login. Turning it off is reasonable if you rely on the mobile Companion App's own remote connection or a cloud integration (Alexa, Google Assistant) that doesn't handle an Access challenge - the wizard explains the trade-off inline. Without Access, Home Assistant's own login page is what stands between the internet and your home, so a strong password plus [multi-factor authentication](https://www.home-assistant.io/docs/authentication/multi-factor-auth/) enabled inside Home Assistant matters more, not less.
+
+**Home Assistant Proxy Settings...**, in the same submenu, is a second, independent step worth doing right after: without it, Home Assistant sees every visitor as the tunnel's internal gateway address rather than their real IP, which means its login-failure ban ends up blocking the tunnel itself (locking out every real user at once) and "last logged in from" always shows the wrong address. It writes a small, clearly marked block at the end of `configuration.yaml` - after backing the file up, and only for the two keys involved (`http.use_x_forwarded_for`/`trusted_proxies`, `homeassistant.external_url`) - and rolls back automatically if Home Assistant fails to restart afterward. If either key already exists elsewhere in your `configuration.yaml`, the dialog shows the snippet to merge in by hand instead of writing a conflicting second copy.
+
+On an instance whose config directory came from a **restored backup**, that YAML edit alone can be silently ineffective: confirmed on a real instance, Home Assistant had already migrated `http:` settings into its own `.storage/http` and was reading trusted_proxies from there on every boot, ignoring configuration.yaml entirely (its `yaml_migration_done` flag never actually completed the migration). So the dialog also patches `.storage/http` directly when it exists - adding the trusted proxy without touching or reordering anything else in it - backed up first, the same as the YAML file. This is inherently more fragile than the YAML edit (it depends on an internal Home Assistant storage format, not a documented one), which is why it only ever *adds* the missing entry and never guesses at an unfamiliar structure.
+
+**Removing it.** Each instance's Network submenu has **Disable Remote Access...**, which removes that instance's DNS record, Access application and ingress rule (and offers to remove the proxy settings block, and the matching `.storage/http` entry, too); **Cloudflare Tunnel → Remove Tunnel...** tears down the whole machine-level connector. Both prompt for an API token, pre-filled with whatever was saved earlier - see "Security note" below for how it's stored, and **Cloudflare Tunnel → Forget Saved API Token** if you'd rather not keep it on disk.
+
+**A restored backup from a different machine can also carry a `homeassistant.media_dirs` entry pointing at a path that only existed there** (a macOS `/Users/.../Music` folder, say) - Home Assistant refuses to start at all over it, with no way to click past it in the UI. Every start now checks each configured media_dirs path against the actual container filesystem first and silently strips any entry that isn't there (after backing up configuration.yaml), so the instance still comes up rather than getting stuck; a balloon notification and the app log say exactly what was removed, in case a mount was only temporarily missing.
+
 ## Security note
 
-`settings.json` holds no secrets - only instance names, ports, bind addresses and pinned versions. Home Assistant's own credentials (users, sessions, long-lived tokens) live in each instance's `.storage` directory inside the WSL distro, protected by your Windows user profile's file permissions.
+`settings.json` holds no secrets - only instance names, ports, bind addresses, pinned versions and (if remote access is set up) hostnames and Cloudflare resource ids. Home Assistant's own credentials (users, sessions, long-lived tokens) live in each instance's `.storage` directory inside the WSL distro, protected by your Windows user profile's file permissions.
+
+The secrets this app does keep at rest are the Cloudflare tunnel's own run token (`%LOCALAPPDATA%\HaWinServer\secrets.dat`) and the Cloudflare **API** token you paste into the setup wizard (`%LOCALAPPDATA%\HaWinServer\cloudflare-api-token.dat`, saved the first time it's used) - both encrypted with Windows DPAPI (tied to your Windows user profile, the same way saved browser passwords are), each in its own file so removing one never affects the other. Saving the API token means every dialog that needs it - the setup wizard for a new instance, disabling remote access, removing the tunnel - opens with it already filled in, even after restarting the app. Use **Cloudflare Tunnel → Forget Saved API Token** in the tray menu if you'd rather re-enter it every time instead of keeping it on disk.
 
 Two consequences worth knowing:
 
@@ -151,7 +179,7 @@ Two consequences worth knowing:
 dotnet build "src/HaWinServer/HaWinServer.csproj"
 ```
 
-Zero NuGet packages - everything comes from the .NET/WinForms base class library (`System.Text.Json`, `HttpClient`, `System.Net.NetworkInformation`, `Microsoft.Win32.Registry`, WinForms controls).
+Zero NuGet packages - everything comes from the .NET/WinForms base class library (`System.Text.Json`, `HttpClient`, `System.Net.NetworkInformation`, `Microsoft.Win32.Registry`, `System.Security.Cryptography.X509Certificates`, WinForms controls). The Cloudflare API client and DPAPI secret storage (see "Remote access") are both hand-rolled against `HttpClient`/`crypt32.dll` for the same reason - no SDK dependency.
 
 ### Publishing
 
@@ -203,3 +231,7 @@ There's no automated test suite for this - it's a tray app orchestrating externa
     It then appears in **Assign USB Device...** and can be assigned, and `podman inspect <container> --format '{{.HostConfig.Devices}}'` shows it was really passed through. The nodes live in a tmpfs, so they vanish on the next `wsl --shutdown`; `rm -f /dev/ttyACM9 /dev/serial/by-id/usb-Simulated_ConBee_II_TEST-if00` removes them sooner.
 13. **Failure paths** - confirm the "WSL isn't set up" message appears correctly on a machine where WSL is genuinely unavailable; interrupt the network mid-bootstrap and confirm Retry resumes correctly.
 14. **LAN access** - from a second physical device, with mirrored networking enabled and bind set to "All interfaces", confirm (or rule out) actual reachability - this wasn't verified during development for lack of a second device.
+15. **Remote access setup** - with a real Cloudflare zone and a scoped API token, run **Set Up Remote Access...**. Confirm the tunnel shows `HEALTHY` in the Zero Trust dashboard, the hostname resolves to a proxied Cloudflare IP, and it's reachable over HTTPS (including WebSocket - the dashboard hangs on load without it) from a network outside your LAN, e.g. a phone hotspot.
+16. **Second instance, same tunnel** - add remote access to a second instance on its own port and hostname; confirm both stay reachable through the one connector process, and that changing an instance's port re-syncs its ingress rule without needing a manual restart.
+17. **Home Assistant Proxy Settings** - apply it, confirm the trusted_proxies warning disappears from the Home Assistant log and the login page's client IP is correct; then deliberately pre-add a conflicting `http:` key to `configuration.yaml` and confirm the dialog refuses to duplicate it and shows the merge snippet instead.
+18. **Disable / Remove Tunnel** - confirm **Disable Remote Access...** removes the DNS record and ingress rule for that instance only, and **Remove Tunnel...** cleans up every instance and stops `cloudflared.exe`; confirm quitting the tray app also stops it.

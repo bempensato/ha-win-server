@@ -49,6 +49,42 @@ public sealed class InstanceSettings
     /// </summary>
     public List<string> UsbDevices { get; set; } = new();
 
+    // ---- Cloudflare Tunnel: remote access for this instance ------------------
+    // See TunnelSettings for the machine-level (one per machine) side of this.
+    // Everything here is either user input (Hostname, AccessEnabled,
+    // AccessEmails) or a cache of Cloudflare's own state (ZoneId,
+    // DnsRecordId, AccessAppId) kept so the menu doesn't need an API round
+    // trip just to show status - re-resolved from Cloudflare, not trusted
+    // blindly, if a sync call gets a 404 back for a cached id.
+
+    /// <summary>Whether this instance has a Public Hostname configured and should appear in the tunnel's ingress rules.</summary>
+    public bool TunnelEnabled { get; set; }
+
+    /// <summary>The fully-qualified Public Hostname, e.g. "casa.pc-salotto.example.com".</summary>
+    public string? Hostname { get; set; }
+
+    /// <summary>Cached Cloudflare zone id the hostname's DNS record lives in.</summary>
+    public string? ZoneId { get; set; }
+
+    /// <summary>Cached id of the CNAME record backing this hostname.</summary>
+    public string? DnsRecordId { get; set; }
+
+    /// <summary>Whether a Cloudflare Access application gates this hostname.</summary>
+    public bool AccessEnabled { get; set; }
+
+    /// <summary>Email addresses allowed through Access's one-time-PIN challenge, when AccessEnabled.</summary>
+    public List<string> AccessEmails { get; set; } = new();
+
+    /// <summary>Cached id of the Access application created for this hostname.</summary>
+    public string? AccessAppId { get; set; }
+
+    /// <summary>
+    /// True once the opt-in "# BEGIN HaWinServer" block has been written into
+    /// this instance's configuration.yaml - see HaConfigPatcher. Drives
+    /// whether "Remove Home Assistant proxy settings" is offered.
+    /// </summary>
+    public bool ProxyConfigApplied { get; set; }
+
     [JsonIgnore]
     public string ContainerName =>
         UseLegacyPaths ? WslManager.LegacyContainerName : $"{WslManager.LegacyContainerName}-{Id}";
@@ -90,6 +126,9 @@ public sealed class Settings
     public List<InstanceSettings> Instances { get; set; } = new();
 
     public string? SelectedInstanceId { get; set; }
+
+    /// <summary>This machine's single Cloudflare Tunnel connector - see TunnelSettings.</summary>
+    public TunnelSettings Tunnel { get; set; } = new();
 
     // Pre-multi-instance fields, read once so an existing settings.json
     // migrates into Instances[0] instead of being silently reset to defaults.

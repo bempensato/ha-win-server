@@ -29,8 +29,45 @@ public sealed class TrayContext : ApplicationContext
     private readonly TrayIcons _trayIcons;
     private readonly ContextMenuStrip _menu;
     private readonly List<HassInstance> _instances = new();
+    private readonly TunnelSupervisor _tunnelSupervisor;
+
+    // Cached in memory for this session, but backed by SecretStore
+    // (DPAPI-protected, separate file, never settings.json - see
+    // SecretStore's doc comment) via RememberCloudflareApiToken/
+    // ForgetSavedApiToken, so it also survives an app restart.
+    private string? _lastCloudflareApiToken;
+
+    /// <summary>
+    /// Records a Cloudflare API token the user just entered/confirmed in any
+    /// dialog, both for immediate in-session reuse and persisted to disk so
+    /// it's already on hand the next time - see SecretStore.SaveApiToken.
+    /// Ignores a blank value (e.g. a cleanup dialog left empty on purpose)
+    /// rather than clearing a previously saved good token.
+    /// </summary>
+    private void RememberCloudflareApiToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return;
+        _lastCloudflareApiToken = token;
+        SecretStore.SaveApiToken(token);
+    }
+
+    /// <summary>Forgets the saved Cloudflare API token - the "Forget Saved API Token" menu action. Fully reversible: the next dialog that needs it just asks again.</summary>
+    public void ForgetSavedApiToken()
+    {
+        SecretStore.DeleteApiToken();
+        _lastCloudflareApiToken = null;
+        LogAppEvent("Forgot the saved Cloudflare API token.");
+        MessageBox.Show(
+            "The saved Cloudflare API token has been removed. You'll be asked for it again next time it's needed.",
+            "Cloudflare Tunnel",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+    }
 
     public Settings RootSettings { get; }
+
+    public TunnelState TunnelState => _tunnelSupervisor.State;
+    public string? TunnelLastError => _tunnelSupervisor.LastErrorDetail;
 
     // Cached rather than queried live: MenuBuilder reads these synchronously
     // every time the menu opens, and an "is it installed" check now means an
@@ -55,6 +92,14 @@ public sealed class TrayContext : ApplicationContext
         {
             AddInstanceObject(instanceSettings);
         }
+
+        _tunnelSupervisor = new TunnelSupervisor(RootSettings.Tunnel);
+        _tunnelSupervisor.StateChanged += (_, _) => OnTunnelStateChanged();
+
+        // Restores whatever API token was last saved via RememberCloudflareApiToken
+        // (SecretStore, DPAPI-protected) so every Cloudflare dialog this session
+        // opens with it already filled in, instead of asking again after a restart.
+        _lastCloudflareApiToken = SecretStore.TryLoadApiToken();
 
         _trayIcons = new TrayIcons();
         _menu = new ContextMenuStrip();
@@ -98,6 +143,11 @@ public sealed class TrayContext : ApplicationContext
             foreach (var instance in _instances)
             {
                 await instance.Supervisor.SyncWithContainerAsync();
+            }
+
+            if (RootSettings.Tunnel.Enabled && SecretStore.HasTunnelToken())
+            {
+                await _tunnelSupervisor.StartAsync();
             }
         }
         else
@@ -259,6 +309,17 @@ public sealed class TrayContext : ApplicationContext
     private void OnInstanceStateChanged(HassInstance instance)
     {
         RefreshTrayIcon();
+
+        if (instance.Supervisor.ConsumeAutoFixNote() is { Length: > 0 } fixNote)
+        {
+            _notifyIcon.BalloonTipTitle = _instances.Count > 1
+                ? $"\"{instance.Name}\": configuration.yaml auto-fixed"
+                : "configuration.yaml auto-fixed";
+            _notifyIcon.BalloonTipText = Truncate(fixNote, 240);
+            _notifyIcon.ShowBalloonTip(6000);
+            LogAppEvent($"[{instance.Id}] {fixNote}");
+        }
+
         if (instance.State == HassState.Error && instance.Supervisor.LastErrorDetail is { Length: > 0 } detail)
         {
             _notifyIcon.BalloonTipTitle = _instances.Count > 1
@@ -305,6 +366,46 @@ public sealed class TrayContext : ApplicationContext
         _ => state.ToString(),
     };
 
+    private void OnTunnelStateChanged()
+    {
+        if (_tunnelSupervisor.State == TunnelState.Error && _tunnelSupervisor.LastErrorDetail is { Length: > 0 } detail)
+        {
+            _notifyIcon.BalloonTipTitle = "Cloudflare Tunnel stopped unexpectedly";
+            _notifyIcon.BalloonTipText = Truncate(detail, 240);
+            _notifyIcon.ShowBalloonTip(6000);
+            LogAppEvent("Cloudflare Tunnel error: " + detail);
+        }
+        else if (_tunnelSupervisor.State == TunnelState.Running)
+        {
+            // Also reached when the watchdog self-heals a spurious Error
+            // (e.g. the initial readiness check timed out but cloudflared
+            // went on to connect) - worth a line in the log since the menu
+            // briefly showed "Error" for no real reason.
+            LogAppEvent("Cloudflare Tunnel connected.");
+        }
+    }
+
+    public static string TunnelStateLabel(TunnelState state) => state switch
+    {
+        TunnelState.Stopped => "Stopped",
+        TunnelState.Starting => "Starting...",
+        TunnelState.Running => "Running",
+        TunnelState.Stopping => "Stopping...",
+        TunnelState.Error => "Error",
+        _ => state.ToString(),
+    };
+
+    /// <summary>What the Network submenu's status line shows for one instance - combines "does it have a hostname" with the shared connector's own state.</summary>
+    public string RemoteAccessStatusLabel(HassInstance instance)
+    {
+        if (!instance.Settings.TunnelEnabled || string.IsNullOrEmpty(instance.Settings.Hostname))
+        {
+            return "Remote access: off";
+        }
+
+        return $"Remote access: {instance.Settings.Hostname} ({TunnelStateLabel(_tunnelSupervisor.State)})";
+    }
+
     private static string Truncate(string text, int maxLength) =>
         text.Length <= maxLength ? text : text[..(maxLength - 1)] + "...";
 
@@ -323,6 +424,14 @@ public sealed class TrayContext : ApplicationContext
         if (instance.LanUrl is { } url)
         {
             Clipboard.SetText(url);
+        }
+    }
+
+    public void CopyPublicUrl(HassInstance instance)
+    {
+        if (instance.Settings.Hostname is { Length: > 0 } hostname)
+        {
+            Clipboard.SetText($"https://{hostname}");
         }
     }
 
@@ -603,6 +712,396 @@ public sealed class TrayContext : ApplicationContext
                 await instance.Supervisor.RestartAsync();
             }
         }
+    }
+
+    // ---- Cloudflare Tunnel: remote access -------------------------------------
+
+    /// <summary>
+    /// Every ingress rule the tunnel should currently carry, rebuilt from
+    /// settings.json - CloudflareApi.SyncIngressAsync always overwrites the
+    /// tunnel's ENTIRE rule set (Cloudflare's API has no per-hostname
+    /// add/remove), so every caller sends this complete list, never a diff.
+    /// </summary>
+    private IReadOnlyList<IngressRule> BuildIngressRules() =>
+        RootSettings.Instances
+            .Where(i => i.TunnelEnabled && !string.IsNullOrEmpty(i.Hostname))
+            .Select(i => new IngressRule(i.Hostname, $"http://127.0.0.1:{i.Port}"))
+            .ToList();
+
+    /// <summary>
+    /// Runs the tunnel setup wizard for one instance and, on confirmation,
+    /// does the actual Cloudflare provisioning: creates the machine's tunnel
+    /// if this is the first instance to use it, syncs ingress rules BEFORE
+    /// creating the DNS record (a CNAME pointing at a tunnel with no matching
+    /// ingress rule yet returns Cloudflare error 1033 to visitors), then
+    /// optionally gates the hostname behind Access. Also used to change an
+    /// already-configured instance's hostname - the wizard pre-fills the
+    /// existing zone in that case.
+    /// </summary>
+    public async Task SetUpRemoteAccessAsync(HassInstance instance)
+    {
+        if (!IsHomeAssistantInstalled || _isBusy) return;
+
+        var result = TunnelSetupDialog.Show(
+            instance.Name, RootSettings.Tunnel, _lastCloudflareApiToken, instance.Settings);
+        if (result is null) return;
+
+        RememberCloudflareApiToken(result.ApiToken);
+
+        await RunProgressAsync($"Set Up Remote Access - {instance.Name}", async (window, log) =>
+        {
+            window.SetStatus("Locating cloudflared...");
+            var cloudflaredPath = Cloudflared.Find();
+            if (cloudflaredPath is null)
+            {
+                window.SetStatus("Downloading cloudflared...");
+                try
+                {
+                    cloudflaredPath = await Cloudflared.DownloadAsync(log);
+                }
+                catch (Exception ex)
+                {
+                    window.ShowFailure("Could not obtain cloudflared: " + ex.Message);
+                    return;
+                }
+            }
+            log($"Using cloudflared at {cloudflaredPath}.");
+
+            var api = new CloudflareApi(result.ApiToken);
+            var isFirstSetup = RootSettings.Tunnel.TunnelId is null;
+
+            try
+            {
+                if (isFirstSetup)
+                {
+                    var tunnelName = $"hawinserver-{HostnameSlug.Slugify(Environment.MachineName)}";
+
+                    // Adopt an existing tunnel of this name rather than
+                    // blindly creating one: a previous attempt may have
+                    // created it and then failed on a later step (ingress,
+                    // DNS, Access) before settings.json was saved, which
+                    // would otherwise orphan it - every retry would then hit
+                    // Cloudflare error 1013 ("already have a tunnel with
+                    // this name") forever, since the name is deterministic.
+                    window.SetStatus("Checking for an existing tunnel...");
+                    var tunnel = await api.FindTunnelByNameAsync(result.AccountId, tunnelName);
+                    if (tunnel is not null)
+                    {
+                        log($"Found existing tunnel \"{tunnel.Name}\" ({tunnel.Id}) - reusing it.");
+                    }
+                    else
+                    {
+                        window.SetStatus("Creating the tunnel...");
+                        tunnel = await api.CreateTunnelAsync(result.AccountId, tunnelName);
+                        log($"Created tunnel \"{tunnel.Name}\" ({tunnel.Id}).");
+                    }
+
+                    window.SetStatus("Fetching the tunnel token...");
+                    var token = await api.GetTunnelTokenAsync(result.AccountId, tunnel.Id);
+                    SecretStore.SaveTunnelToken(token);
+                    log("Tunnel token saved (encrypted).");
+
+                    RootSettings.Tunnel.AccountId = result.AccountId;
+                    RootSettings.Tunnel.TunnelId = tunnel.Id;
+                    RootSettings.Tunnel.TunnelName = tunnel.Name;
+                    RootSettings.Tunnel.Enabled = true;
+
+                    // Saved right away, before ingress/DNS/Access even run:
+                    // if one of those fails below, a retry must see this
+                    // tunnel as already-adopted rather than attempt to
+                    // create a second one under the same name.
+                    RootSettings.Save();
+                }
+
+                RootSettings.Tunnel.Zone = result.ZoneName;
+
+                instance.Settings.TunnelEnabled = true;
+                instance.Settings.Hostname = result.Hostname;
+                instance.Settings.ZoneId = result.ZoneId;
+
+                window.SetStatus("Updating the tunnel's ingress rules...");
+                await api.SyncIngressAsync(RootSettings.Tunnel.AccountId!, RootSettings.Tunnel.TunnelId!, BuildIngressRules());
+                log("Ingress rules updated.");
+
+                window.SetStatus("Creating the DNS record...");
+                var record = await api.UpsertCnameAsync(result.ZoneId, result.Hostname, RootSettings.Tunnel.TunnelId!);
+                instance.Settings.DnsRecordId = record.Id;
+                log($"DNS record ready: {record.Name} -> {record.Content}");
+
+                if (result.ProtectWithAccess)
+                {
+                    window.SetStatus("Setting up Cloudflare Access...");
+                    var accessApp = await api.CreateAccessAppAsync(result.AccountId, result.Hostname);
+                    await api.CreateAccessAllowPolicyAsync(result.AccountId, accessApp.Id, result.AccessEmails);
+                    await api.CreateAccessWebhookBypassAsync(result.AccountId, accessApp.Id);
+
+                    instance.Settings.AccessEnabled = true;
+                    instance.Settings.AccessAppId = accessApp.Id;
+                    instance.Settings.AccessEmails = result.AccessEmails.ToList();
+                    log("Access application created (allow list + webhook bypass).");
+                }
+                else
+                {
+                    instance.Settings.AccessEnabled = false;
+                    instance.Settings.AccessAppId = null;
+                    instance.Settings.AccessEmails.Clear();
+                }
+
+                RootSettings.Save();
+
+                window.SetStatus("Starting the tunnel connector...");
+                if (_tunnelSupervisor.State is TunnelState.Stopped or TunnelState.Error)
+                {
+                    await _tunnelSupervisor.StartAsync();
+                }
+
+                if (_tunnelSupervisor.State != TunnelState.Running)
+                {
+                    window.ShowFailure(
+                        "The Cloudflare configuration was saved, but the local connector did not start. " +
+                        (_tunnelSupervisor.LastErrorDetail ?? "Check \"View cloudflared Log\"."));
+                    return;
+                }
+
+                LogAppEvent($"[{instance.Id}] Remote access set up: https://{instance.Settings.Hostname}");
+                window.ShowSuccess(
+                    $"\"{instance.Name}\" is reachable at https://{instance.Settings.Hostname}. " +
+                    "Open \"Home Assistant Proxy Settings...\" next so Home Assistant trusts the tunnel.");
+            }
+            catch (CloudflareApiException ex)
+            {
+                window.ShowFailure("Cloudflare rejected the request: " + ex.Message);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Removes one instance's remote access: its DNS record, its Access
+    /// application, its ingress rule, and - if present - the HA Win Server
+    /// managed block in its configuration.yaml. The API token is pre-filled
+    /// from SecretStore when one was saved earlier; leaving it blank still
+    /// disables the instance locally, it just leaves the Cloudflare-side
+    /// DNS/Access resources for manual cleanup.
+    /// </summary>
+    public async Task DisableRemoteAccessAsync(HassInstance instance)
+    {
+        if (!instance.Settings.TunnelEnabled || _isBusy) return;
+
+        var confirmed = MessageBox.Show(
+            $"Remove remote access for \"{instance.Name}\" ({instance.Settings.Hostname})? " +
+            "Home Assistant's own data is not affected.",
+            "Disable Remote Access",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2);
+        if (confirmed != DialogResult.Yes) return;
+
+        var apiToken = PromptDialog.Show(
+            "Disable Remote Access",
+            "Cloudflare API token (saved securely for reuse):",
+            _lastCloudflareApiToken ?? string.Empty,
+            masked: true);
+        RememberCloudflareApiToken(apiToken);
+
+        await RunProgressAsync($"Disable Remote Access - {instance.Name}", async (window, log) =>
+        {
+            window.SetStatus("Cleaning up Cloudflare resources...");
+            await CleanupCloudflareResourcesForInstanceAsync(
+                instance, string.IsNullOrWhiteSpace(apiToken) ? null : apiToken, log);
+            RootSettings.Save();
+
+            if (instance.Settings.ProxyConfigApplied)
+            {
+                window.SetStatus("Removing Home Assistant proxy settings...");
+                var cidr = await HaConfigPatcher.DetectTrustedProxyCidrAsync();
+                var (_, detail) = await HaConfigPatcher.RemoveAsync(instance, cidr, log);
+                log(detail);
+                RootSettings.Save();
+            }
+
+            LogAppEvent($"[{instance.Id}] Remote access disabled.");
+            window.ShowSuccess("Remote access disabled.");
+        });
+    }
+
+    /// <summary>
+    /// Shared cleanup for one instance's Cloudflare-side resources - used by
+    /// both DisableRemoteAccessAsync and DeleteInstanceAsync.
+    /// <paramref name="resyncIngress"/> is false when the caller is about to
+    /// delete the whole tunnel anyway (RemoveTunnelAsync) - no point
+    /// re-uploading a rule set that is seconds from being discarded.
+    /// </summary>
+    private async Task CleanupCloudflareResourcesForInstanceAsync(
+        HassInstance instance, string? apiToken, Action<string> log, bool resyncIngress = true)
+    {
+        if (!instance.Settings.TunnelEnabled) return;
+
+        if (apiToken is null)
+        {
+            log($"[{instance.Id}] No API token given - the DNS record and Access application (if any) were left on Cloudflare; remove them from the dashboard if needed.");
+        }
+        else
+        {
+            try
+            {
+                var api = new CloudflareApi(apiToken);
+
+                if (instance.Settings.DnsRecordId is not null && instance.Settings.ZoneId is not null)
+                {
+                    await api.DeleteDnsRecordAsync(instance.Settings.ZoneId, instance.Settings.DnsRecordId);
+                    log($"[{instance.Id}] Removed the DNS record.");
+                }
+
+                if (instance.Settings.AccessAppId is not null && RootSettings.Tunnel.AccountId is not null)
+                {
+                    await api.DeleteAccessAppAsync(RootSettings.Tunnel.AccountId, instance.Settings.AccessAppId);
+                    log($"[{instance.Id}] Removed the Access application.");
+                }
+            }
+            catch (Exception ex)
+            {
+                log($"[{instance.Id}] Could not clean up Cloudflare-side resources: {ex.Message}");
+            }
+        }
+
+        instance.Settings.TunnelEnabled = false;
+        instance.Settings.Hostname = null;
+        instance.Settings.ZoneId = null;
+        instance.Settings.DnsRecordId = null;
+        instance.Settings.AccessEnabled = false;
+        instance.Settings.AccessAppId = null;
+        instance.Settings.AccessEmails.Clear();
+
+        if (resyncIngress && apiToken is not null
+            && RootSettings.Tunnel.AccountId is not null && RootSettings.Tunnel.TunnelId is not null)
+        {
+            try
+            {
+                var api = new CloudflareApi(apiToken);
+                await api.SyncIngressAsync(RootSettings.Tunnel.AccountId, RootSettings.Tunnel.TunnelId, BuildIngressRules());
+                log($"[{instance.Id}] Updated the tunnel's ingress rules.");
+            }
+            catch (Exception ex)
+            {
+                log($"[{instance.Id}] Could not update ingress rules: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>Previews, then applies, the trusted_proxies/external_url block - see HaConfigPatcher.</summary>
+    public async Task ShowProxyConfigDialogAsync(HassInstance instance)
+    {
+        if (!IsHomeAssistantInstalled || _isBusy) return;
+
+        var suggestedUrl = instance.Settings.Hostname is { Length: > 0 } host ? $"https://{host}" : null;
+        var request = ProxyConfigDialog.Show(instance.Name, HaConfigPatcher.ConfigYamlPath(instance.Settings), suggestedUrl);
+        if (request is null) return;
+
+        await RunProgressAsync($"Home Assistant Proxy Settings - {instance.Name}", async (window, log) =>
+        {
+            var (success, detail) = await HaConfigPatcher.ApplyAsync(
+                instance, request.TrustedProxyCidr, request.ExternalUrl,
+                request.IncludeHttp, request.IncludeExternalUrl, log);
+            RootSettings.Save();
+
+            LogAppEvent($"[{instance.Id}] Proxy settings: {detail}");
+            if (success) window.ShowSuccess(detail); else window.ShowFailure(detail);
+        });
+    }
+
+    public async Task RemoveProxyConfigAsync(HassInstance instance)
+    {
+        if (!IsHomeAssistantInstalled || _isBusy || !instance.Settings.ProxyConfigApplied) return;
+
+        var confirmed = MessageBox.Show(
+            $"Remove the HA Win Server managed block from \"{instance.Name}\"'s configuration.yaml and restart it?",
+            "Remove Home Assistant Proxy Settings",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question,
+            MessageBoxDefaultButton.Button2);
+        if (confirmed != DialogResult.Yes) return;
+
+        await RunProgressAsync($"Remove Proxy Settings - {instance.Name}", async (window, log) =>
+        {
+            var cidr = await HaConfigPatcher.DetectTrustedProxyCidrAsync();
+            var (success, detail) = await HaConfigPatcher.RemoveAsync(instance, cidr, log);
+            RootSettings.Save();
+
+            LogAppEvent($"[{instance.Id}] Proxy settings removal: {detail}");
+            if (success) window.ShowSuccess(detail); else window.ShowFailure(detail);
+        });
+    }
+
+    public async Task RestartTunnelAsync()
+    {
+        if (_isBusy || RootSettings.Tunnel.TunnelId is null) return;
+        await _tunnelSupervisor.RestartAsync();
+    }
+
+    public void ViewTunnelLog() => TryOpenFile(Path.Combine(AppPaths.LogsDir, "cloudflared.log"));
+
+    /// <summary>
+    /// Removes the entire machine-level tunnel: every instance's remote
+    /// access, DNS records and Access applications, the local connector, the
+    /// stored tunnel token, and the tunnel itself on Cloudflare. Individual
+    /// instances' Home Assistant data is never touched.
+    /// </summary>
+    public async Task RemoveTunnelAsync()
+    {
+        if (_isBusy || RootSettings.Tunnel.TunnelId is null) return;
+
+        var confirmed = ConfirmDestructive(
+            "Remove Tunnel",
+            "This removes the Cloudflare Tunnel for this machine entirely: every instance's remote access is " +
+            "disabled, their DNS records and Access applications are removed, and the local connector is " +
+            "stopped. Home Assistant itself is not affected. Continue?",
+            RootSettings.Tunnel.TunnelName ?? "tunnel");
+        if (!confirmed) return;
+
+        var apiToken = PromptDialog.Show(
+            "Remove Tunnel",
+            "Cloudflare API token (saved securely for reuse):",
+            _lastCloudflareApiToken ?? string.Empty,
+            masked: true);
+        var effectiveToken = string.IsNullOrWhiteSpace(apiToken) ? null : apiToken;
+        RememberCloudflareApiToken(effectiveToken);
+
+        await RunProgressAsync("Remove Tunnel", async (window, log) =>
+        {
+            foreach (var instance in _instances.Where(i => i.Settings.TunnelEnabled).ToList())
+            {
+                window.SetStatus($"Cleaning up \"{instance.Name}\"...");
+                await CleanupCloudflareResourcesForInstanceAsync(instance, effectiveToken, log, resyncIngress: false);
+            }
+
+            window.SetStatus("Stopping the connector...");
+            await _tunnelSupervisor.StopAsync();
+
+            if (effectiveToken is not null && RootSettings.Tunnel.AccountId is not null && RootSettings.Tunnel.TunnelId is not null)
+            {
+                try
+                {
+                    var api = new CloudflareApi(effectiveToken);
+                    await api.DeleteTunnelAsync(RootSettings.Tunnel.AccountId, RootSettings.Tunnel.TunnelId);
+                    log("Deleted the tunnel from Cloudflare.");
+                }
+                catch (Exception ex)
+                {
+                    log("Could not delete the tunnel from Cloudflare: " + ex.Message + " (remove it manually from the dashboard).");
+                }
+            }
+            else
+            {
+                log("No API token given - the tunnel itself was left on Cloudflare; remove it manually from the dashboard.");
+            }
+
+            SecretStore.DeleteTunnelToken();
+            RootSettings.Tunnel = new TunnelSettings();
+            RootSettings.Save();
+
+            LogAppEvent("Cloudflare Tunnel removed.");
+            window.ShowSuccess("Tunnel removed.");
+        });
     }
 
     /// <summary>
@@ -938,8 +1437,28 @@ public sealed class TrayContext : ApplicationContext
             instance.Name);
         if (!confirmed) return;
 
+        string? tunnelApiToken = null;
+        if (instance.Settings.TunnelEnabled)
+        {
+            tunnelApiToken = PromptDialog.Show(
+                "Delete Instance",
+                $"\"{instance.Name}\" has remote access configured. Enter a Cloudflare API token to also " +
+                "remove its DNS record and Access application (leave blank to skip and clean those up " +
+                "manually from the dashboard later):",
+                _lastCloudflareApiToken ?? string.Empty,
+                masked: true);
+            RememberCloudflareApiToken(tunnelApiToken);
+        }
+
         await RunProgressAsync($"Delete \"{instance.Name}\"", async (window, log) =>
         {
+            if (instance.Settings.TunnelEnabled)
+            {
+                window.SetStatus("Cleaning up Cloudflare resources...");
+                await CleanupCloudflareResourcesForInstanceAsync(
+                    instance, string.IsNullOrWhiteSpace(tunnelApiToken) ? null : tunnelApiToken, log);
+            }
+
             window.SetStatus($"Stopping \"{instance.Name}\"...");
             await instance.Supervisor.StopAsync();
             await WslManager.RemoveContainerAsync(instance.Settings, log);
@@ -1229,6 +1748,15 @@ public sealed class TrayContext : ApplicationContext
             }
         }
 
+        // Unlike a Home Assistant container (supervised independently by
+        // conmon inside WSL), cloudflared is a direct Windows child process
+        // of this app with no daemon behind it - it does not outlive this
+        // process, so it is always stopped on quit, with no prompt.
+        if (_tunnelSupervisor.State is not TunnelState.Stopped)
+        {
+            await _tunnelSupervisor.StopAsync();
+        }
+
         LogAppEvent("HA Win Server exiting.");
         _notifyIcon.Visible = false;
         Application.Exit();
@@ -1444,6 +1972,7 @@ public sealed class TrayContext : ApplicationContext
             _notifyIcon.Dispose();
             _menu.Dispose();
             _trayIcons.Dispose();
+            _tunnelSupervisor.Dispose();
             foreach (var instance in _instances)
             {
                 instance.Dispose();

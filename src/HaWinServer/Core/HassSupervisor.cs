@@ -42,6 +42,15 @@ public sealed class HassSupervisor : IDisposable
     public HassState State { get; private set; } = HassState.Stopped;
     public string? LastErrorDetail { get; private set; }
 
+    /// <summary>
+    /// Set when StartAsync silently corrected something in configuration.yaml
+    /// (currently: an unreachable homeassistant.media_dirs path - see
+    /// MediaDirsFixer) rather than letting the start fail over it. Read once
+    /// via <see cref="ConsumeAutoFixNote"/> so it surfaces exactly once
+    /// regardless of how many StateChanged events fire for this start.
+    /// </summary>
+    public string? LastAutoFixNote { get; private set; }
+
     public event EventHandler? StateChanged;
 
     public HassSupervisor(InstanceSettings settings)
@@ -51,6 +60,13 @@ public sealed class HassSupervisor : IDisposable
 
     public bool IsRunningOrTransitioning =>
         State is HassState.Starting or HassState.Running or HassState.Stopping;
+
+    public string? ConsumeAutoFixNote()
+    {
+        var note = LastAutoFixNote;
+        LastAutoFixNote = null;
+        return note;
+    }
 
     /// <summary>
     /// Syncs this supervisor's state with whatever the container is actually
@@ -97,6 +113,21 @@ public sealed class HassSupervisor : IDisposable
                     "Use \"Assign USB Device...\" to reattach it.";
                 SetState(HassState.Error);
                 return;
+            }
+
+            // Checked before every start, not just after a failure: a
+            // media_dirs path from a different machine (a restored backup's
+            // config, most commonly) makes Home Assistant refuse to start at
+            // all, with no way to click past it - fixing it proactively is
+            // simpler and more reliable than trying to detect and parse that
+            // specific failure after the fact. Near-zero cost when there is
+            // no media_dirs block at all, which is true for most instances.
+            var removedMediaDirs = await MediaDirsFixer.RemoveUnreachableEntriesAsync(_settings, ct: ct);
+            if (removedMediaDirs.Count > 0)
+            {
+                LastAutoFixNote =
+                    "Removed unreachable homeassistant.media_dirs entrie(s) that would have prevented startup:\n" +
+                    string.Join("\n", removedMediaDirs.Select(e => $"  {e.Key}: {e.Path}"));
             }
 
             var runResult = await WslManager.RunContainerAsync(_settings, onOutputLine: null, ct);

@@ -339,6 +339,66 @@ public static class WslManager
         RunAsRootAsync(bashScript, onOutputLine, ct);
 
     /// <summary>
+    /// Checks whether each of the given CONTAINER-SIDE paths exists as a
+    /// directory, using a short-lived throwaway container built from the
+    /// same image and the same /config bind mount the real instance uses -
+    /// the only way to know for certain, since anything outside /config is
+    /// the image's own filesystem and cannot be inspected from the
+    /// Windows/WSL side. Used to validate homeassistant.media_dirs entries
+    /// before starting an instance - see MediaDirsFixer, which this exists
+    /// for.
+    ///
+    /// Fails safe: if the check itself can't run (podman error, etc.), every
+    /// path is reported as existing rather than missing, so a transient
+    /// failure here can never cause a real, working media_dirs entry to be
+    /// stripped out.
+    /// </summary>
+    public static async Task<IReadOnlyDictionary<string, bool>> CheckDirectoriesExistAsync(
+        InstanceSettings instance, IReadOnlyList<string> containerPaths, CancellationToken ct = default)
+    {
+        var result = new Dictionary<string, bool>(StringComparer.Ordinal);
+        if (containerPaths.Count == 0) return result;
+
+        var checks = string.Join("\n", containerPaths
+            .Select(p => $"[ -d \"{p}\" ] && echo \"OK|{p}\" || echo \"MISSING|{p}\""));
+
+        var script = $"""
+            podman run --rm -v {instance.LinuxConfigDir}:/config {instance.ImageRef} sh -c '
+            {checks}
+            '
+            """;
+
+        ProcResult runResult;
+        try
+        {
+            runResult = await RunAsRootAsync(script, onOutputLine: null, ct);
+        }
+        catch (Exception)
+        {
+            runResult = new ProcResult(1, "", "");
+        }
+
+        if (runResult.Succeeded)
+        {
+            foreach (var line in runResult.StdOut.Split('\n'))
+            {
+                var parts = line.Trim().Split('|', 2);
+                if (parts.Length == 2) result[parts[1]] = parts[0] == "OK";
+            }
+        }
+
+        // Anything the check couldn't confirm one way or the other (podman
+        // failure, or a path that didn't show up in the output) defaults to
+        // "exists" - fail safe, never delete something we couldn't verify.
+        foreach (var path in containerPaths)
+        {
+            result.TryAdd(path, true);
+        }
+
+        return result;
+    }
+
+    /// <summary>
     /// `podman stop` sends SIGTERM (then SIGKILL after a grace period) to
     /// the container's own PID 1 - since this is real Linux inside the
     /// container, Home Assistant's normal POSIX signal handling just works,
