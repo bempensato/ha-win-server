@@ -11,6 +11,13 @@
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- app.manifest now also declares dpiAwareness directly - see its
+         comment for why this property alone was not reaching the built exe.
+         That makes the Application.SetHighDpiMode() call this property
+         generates a documented no-op at runtime, which the analyzer flags
+         as WFO0003 - harmless, so suppressed rather than dropping either
+         declaration. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- No admin required: this app installs everything under %LOCALAPPDATA% and HKCU. -->
   </PropertyGroup>
