@@ -22,6 +22,16 @@ public sealed class PromptDialog : Form
 
     private PromptDialog(string title, string label, string initialValue, bool masked)
     {
+        // See TunnelSetupDialog's constructor for the full explanation. This
+        // dialog is hit hardest by the missing setting: it lays every control
+        // out at an absolute pixel Location/Size computed from Font before
+        // the Form has been shown on its real monitor, so without Dpi mode
+        // telling WinForms to rescale that layout once the true DPI is
+        // known, the computed ClientSize can end up too small for what it
+        // contains - which is what hid the password field on the restore
+        // flow.
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = title;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;

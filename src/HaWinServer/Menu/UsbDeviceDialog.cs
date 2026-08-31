@@ -40,6 +40,13 @@ public sealed class UsbDeviceDialog : Form
         _instanceName = instanceName;
         _assignedElsewhere = assignedElsewhere;
 
+        // See TunnelSetupDialog's constructor for why this is needed: without
+        // it, this hand-built dialog's fixed-size GroupBoxes scale by an
+        // unreliable font-metric ratio instead of the monitor's actual DPI,
+        // which is what produced the wrong-size/clipped-field reports on
+        // Windows 10.
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = $"USB Devices - {instanceName}";
         Width = 720;
         Height = 620;

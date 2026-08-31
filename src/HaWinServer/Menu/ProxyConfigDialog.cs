@@ -36,6 +36,9 @@ public sealed class ProxyConfigDialog : Form
     {
         _configYamlPath = configYamlPath;
 
+        // See TunnelSetupDialog's constructor for why this is needed.
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = $"Home Assistant Proxy Settings - {instanceName}";
         Width = 620;
         Height = 620;

@@ -18,6 +18,9 @@ public sealed class SetupWindow : Form
 
     public SetupWindow()
     {
+        // See TunnelSetupDialog's constructor for why this is needed.
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = "HA Win Server - Setup";
         Width = 640;
         Height = 440;
