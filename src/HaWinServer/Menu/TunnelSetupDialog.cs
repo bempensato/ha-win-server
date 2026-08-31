@@ -82,6 +82,19 @@ public sealed class TunnelSetupDialog : Form
         _instanceName = instanceName;
         _existingTunnel = existingTunnel;
 
+        // PerMonitorV2 is declared in the app manifest, but that alone only
+        // makes Windows report the real per-monitor DPI - it does not make a
+        // hand-built Form (no designer-generated AutoScaleDimensions) react
+        // to it correctly. Left at the default AutoScaleMode.Font, this
+        // dialog's fixed-size GroupBoxes and the Form's own Width/Height
+        // scale by a font-metric ratio that does not reliably match the
+        // actual DPI ratio, which on Windows 10 at anything other than 100%
+        // leaves some controls (notably the hostname box) sized or
+        // positioned outside their container. Dpi mode ties scaling
+        // directly to the monitor's DPI instead, which is what Microsoft
+        // recommends for PerMonitorV2-aware apps.
+        AutoScaleMode = AutoScaleMode.Dpi;
+
         Text = $"Set Up Remote Access - {instanceName}";
         Width = 640;
         Height = 640;
