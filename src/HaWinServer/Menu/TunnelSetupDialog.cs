@@ -82,22 +82,23 @@ public sealed class TunnelSetupDialog : Form
         _instanceName = instanceName;
         _existingTunnel = existingTunnel;
 
-        // PerMonitorV2 is declared in the app manifest, but that alone only
-        // makes Windows report the real per-monitor DPI - it does not make a
-        // hand-built Form (no designer-generated AutoScaleDimensions) react
-        // to it correctly. Left at the default AutoScaleMode.Font, this
-        // dialog's fixed-size GroupBoxes and the Form's own Width/Height
-        // scale by a font-metric ratio that does not reliably match the
-        // actual DPI ratio, which on Windows 10 at anything other than 100%
-        // leaves some controls (notably the hostname box) sized or
-        // positioned outside their container. Dpi mode ties scaling
-        // directly to the monitor's DPI instead, which is what Microsoft
-        // recommends for PerMonitorV2-aware apps.
+        // PerMonitorV2 is declared in the app manifest, and AutoScaleMode.Dpi
+        // makes WinForms' own PerformAutoScale rescale every CHILD control's
+        // Location/Size/Font by the real DPI ratio. It does NOT, in
+        // practice, rescale the Form's own Width/Height when those are
+        // assigned directly as literal numbers below (rather than left to
+        // the designer's usual AutoScaleDimensions dance) - confirmed by a
+        // real Windows 10 screenshot where every child had visibly scaled
+        // up (bigger font, a wrapped URL overflowing its row, the Fetch
+        // Zones button pushed out of its GroupBox) while the window itself
+        // stayed sized for the un-scaled 640x640. LogicalToDeviceUnits below
+        // converts that literal, 96-DPI-designed size to whatever the
+        // current monitor's DPI actually needs, so the container catches up
+        // to its already-correctly-scaled children instead of clipping them.
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = $"Set Up Remote Access - {instanceName}";
-        Width = 640;
-        Height = 640;
+        Size = LogicalToDeviceUnits(new Size(640, 640));
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -107,7 +108,7 @@ public sealed class TunnelSetupDialog : Form
         var intro = new Label
         {
             Dock = DockStyle.Top,
-            Height = 70,
+            AutoSize = true,
             Padding = new Padding(12, 10, 12, 0),
             Text = "This exposes Home Assistant to the internet through a Cloudflare Tunnel - no port " +
                    "forwarding, no public IP needed. It requires a domain already added to your Cloudflare " +
@@ -119,7 +120,7 @@ public sealed class TunnelSetupDialog : Form
         var tokenLink = new LinkLabel
         {
             Dock = DockStyle.Top,
-            Height = 24,
+            AutoSize = true,
             Padding = new Padding(12, 0, 12, 0),
             Text = "Create a token at " + TokenCreatePageUrl,
         };
@@ -130,13 +131,26 @@ public sealed class TunnelSetupDialog : Form
         _tokenBox = new TextBox { Width = 380, UseSystemPasswordChar = true, Text = initialApiToken ?? string.Empty };
         _connectButton = new Button { Text = "Fetch Zones", Width = 170 };
         _connectButton.Click += async (_, _) => await OnConnectAsync();
-        _connectStatus = new Label { Dock = DockStyle.Bottom, Height = 24, ForeColor = SystemColors.GrayText };
+        _connectStatus = new Label { Dock = DockStyle.Bottom, Height = LogicalToDeviceUnits(24), ForeColor = SystemColors.GrayText };
 
-        var tokenRow = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32, FlowDirection = FlowDirection.LeftToRight };
+        var tokenRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+        };
         tokenRow.Controls.Add(_tokenBox);
         tokenRow.Controls.Add(_connectButton);
 
-        var tokenGroup = new GroupBox { Dock = DockStyle.Top, Height = 96, Text = "1. Cloudflare API token", Padding = new Padding(10, 6, 10, 6) };
+        var tokenGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "1. Cloudflare API token",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         tokenGroup.Controls.Add(tokenRow);
         tokenGroup.Controls.Add(_connectStatus);
 
@@ -146,11 +160,32 @@ public sealed class TunnelSetupDialog : Form
 
         var zoneLabel = new Label { Text = "Zone (domain):", AutoSize = true, Margin = new Padding(0, 6, 6, 0) };
 
-        var zoneFlow = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = true };
+        // Top, not Fill: this GroupBox is AutoSize (see comment on tokenGroup
+        // above for why), and an AutoSize container cannot also have a Fill
+        // child - Fill wants to expand to whatever the container decides,
+        // AutoSize wants to shrink to whatever the content decides, and
+        // fighting that circularity silently freezes the container at
+        // whatever size it last had. Top still stretches to the full
+        // available width, just without that conflict.
+        var zoneFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+        };
         zoneFlow.Controls.Add(zoneLabel);
         zoneFlow.Controls.Add(_zoneCombo);
 
-        var zoneGroup = new GroupBox { Dock = DockStyle.Top, Height = 66, Text = "2. Zone", Padding = new Padding(10, 6, 10, 6) };
+        var zoneGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "2. Zone",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         zoneGroup.Controls.Add(zoneFlow);
 
         // ---- 3. hostname --------------------------------------------------------
@@ -170,12 +205,26 @@ public sealed class TunnelSetupDialog : Form
             Text = "Must be a single-level subdomain of the zone above - Cloudflare's free SSL certificate does not cover a second subdomain level.",
         };
 
-        var hostnameStack = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var hostnameStack = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+        };
         hostnameStack.Controls.Add(hostnameLabel);
         hostnameStack.Controls.Add(_hostnameBox);
         hostnameStack.Controls.Add(hostnameHint);
 
-        var hostnameGroup = new GroupBox { Dock = DockStyle.Top, Height = 130, Text = "3. Public Hostname", Padding = new Padding(10, 6, 10, 6) };
+        var hostnameGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "3. Public Hostname",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         hostnameGroup.Controls.Add(hostnameStack);
 
         // ---- 4. protection --------------------------------------------------------
@@ -196,13 +245,27 @@ public sealed class TunnelSetupDialog : Form
                    "working. Webhook calls (automations) bypass Access automatically.",
         };
 
-        var accessStack = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var accessStack = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+        };
         accessStack.Controls.Add(_accessCheck);
         accessStack.Controls.Add(emailsLabel);
         accessStack.Controls.Add(_accessEmailsBox);
         accessStack.Controls.Add(accessWarning);
 
-        var accessGroup = new GroupBox { Dock = DockStyle.Top, Height = 190, Text = "4. Protection", Padding = new Padding(10, 6, 10, 6) };
+        var accessGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "4. Protection",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         accessGroup.Controls.Add(accessStack);
 
         // ---- buttons ----------------------------------------------------------------
@@ -217,7 +280,7 @@ public sealed class TunnelSetupDialog : Form
         var buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 44,
+            Height = LogicalToDeviceUnits(44),
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(12, 6, 12, 6),
         };

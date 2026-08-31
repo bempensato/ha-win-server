@@ -22,14 +22,15 @@ public sealed class PromptDialog : Form
 
     private PromptDialog(string title, string label, string initialValue, bool masked)
     {
-        // See TunnelSetupDialog's constructor for the full explanation. This
-        // dialog is hit hardest by the missing setting: it lays every control
-        // out at an absolute pixel Location/Size computed from Font before
-        // the Form has been shown on its real monitor, so without Dpi mode
-        // telling WinForms to rescale that layout once the true DPI is
-        // known, the computed ClientSize can end up too small for what it
-        // contains - which is what hid the password field on the restore
-        // flow.
+        // See TunnelSetupDialog's constructor for the full explanation of why
+        // AutoScaleMode.Dpi alone is not enough here. It matters even more
+        // for this dialog than for the others: every position and size below
+        // is computed by hand from the Pad/ContentWidth constants rather
+        // than left to Dock/Anchor, including the Form's own final
+        // ClientSize - so every one of those literals is run through
+        // LogicalToDeviceUnits explicitly instead of hoping the framework's
+        // post-hoc rescale catches all of them consistently. That mismatch
+        // is what hid the password field on the restore flow.
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = title;
@@ -39,7 +40,10 @@ public sealed class PromptDialog : Form
         MinimizeBox = false;
         ShowInTaskbar = false;
 
-        var textWidth = ContentWidth - (Pad * 2);
+        var pad = LogicalToDeviceUnits(Pad);
+        var contentWidth = LogicalToDeviceUnits(ContentWidth);
+        var buttonSize = LogicalToDeviceUnits(new Size(90, 28));
+        var textWidth = contentWidth - (pad * 2);
 
         // Measured rather than guessed: the prompt can be one line or five.
         var labelHeight = TextRenderer.MeasureText(
@@ -52,33 +56,33 @@ public sealed class PromptDialog : Form
         {
             Text = label,
             AutoSize = false,
-            Location = new Point(Pad, Pad),
+            Location = new Point(pad, pad),
             Size = new Size(textWidth, labelHeight),
         };
 
         _textBox = new TextBox
         {
-            Location = new Point(Pad, promptLabel.Bottom + 8),
+            Location = new Point(pad, promptLabel.Bottom + LogicalToDeviceUnits(8)),
             Width = textWidth,
             Text = initialValue,
             UseSystemPasswordChar = masked,
         };
 
-        var buttonTop = _textBox.Bottom + 14;
+        var buttonTop = _textBox.Bottom + LogicalToDeviceUnits(14);
 
         var okButton = new Button
         {
             Text = "OK",
             DialogResult = DialogResult.OK,
-            Size = new Size(90, 28),
-            Location = new Point(ContentWidth - Pad - 90, buttonTop),
+            Size = buttonSize,
+            Location = new Point(contentWidth - pad - buttonSize.Width, buttonTop),
         };
         var cancelButton = new Button
         {
             Text = "Cancel",
             DialogResult = DialogResult.Cancel,
-            Size = new Size(90, 28),
-            Location = new Point(ContentWidth - Pad - 190, buttonTop),
+            Size = buttonSize,
+            Location = new Point(contentWidth - pad - buttonSize.Width - LogicalToDeviceUnits(100), buttonTop),
         };
 
         Controls.Add(promptLabel);
@@ -86,7 +90,7 @@ public sealed class PromptDialog : Form
         Controls.Add(okButton);
         Controls.Add(cancelButton);
 
-        ClientSize = new Size(ContentWidth, okButton.Bottom + Pad);
+        ClientSize = new Size(contentWidth, okButton.Bottom + pad);
 
         AcceptButton = okButton;
         CancelButton = cancelButton;
