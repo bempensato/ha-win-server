@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      Dev only tool, not shipped: regenerates src/HaWinServer/Resources/app.ico.
+      Run with: dotnet run, from inside this tools/GenerateIcon directory.
+    -->
+  </PropertyGroup>
+
+</Project>
