@@ -8,8 +8,18 @@ internal static class Program
     private const string SingleInstanceMutexName = "HaWinServer.SingleInstance.{6F1D8B2E-6C63-4E9C-9A6D-6E6E9C7B1B2E}";
 
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
+        // The helper leg of a self-update (see AppUpdater.LaunchApplyAsync /
+        // UpdateApplier): the newly downloaded exe is launched with these
+        // arguments to wait for the running app to exit, then copy itself
+        // over it and restart it. Runs before the single-instance mutex,
+        // since the "old" instance is still holding it at this point.
+        if (args.Length >= 3 && args[0] == "--apply-update" && int.TryParse(args[2], out var waitForPid))
+        {
+            return UpdateApplier.Run(targetPath: args[1], waitForPid: waitForPid);
+        }
+
         using var singleInstanceMutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
         if (!createdNew)
         {
@@ -18,7 +28,7 @@ internal static class Program
                 "HA Win Server",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
-            return;
+            return 0;
         }
 
         ApplicationConfiguration.Initialize();
@@ -35,11 +45,13 @@ internal static class Program
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
 
         AppPaths.EnsureCreated();
+        AppUpdater.CleanupStaleFiles();
 
         using var trayContext = new TrayContext();
         Application.Run(trayContext);
 
         // Keep the mutex alive for the whole process lifetime.
         GC.KeepAlive(singleInstanceMutex);
+        return 0;
     }
 }

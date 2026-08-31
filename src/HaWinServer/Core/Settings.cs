@@ -130,6 +130,9 @@ public sealed class Settings
     /// <summary>This machine's single Cloudflare Tunnel connector - see TunnelSettings.</summary>
     public TunnelSettings Tunnel { get; set; } = new();
 
+    /// <summary>This app's own update preferences - see AppUpdateSettings.</summary>
+    public AppUpdateSettings AppUpdates { get; set; } = new();
+
     // Pre-multi-instance fields, read once so an existing settings.json
     // migrates into Instances[0] instead of being silently reset to defaults.
     // Written back as absent (never as null) once migration has happened.

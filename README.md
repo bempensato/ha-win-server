@@ -120,6 +120,14 @@ Global:
 - **Run at Login** - adds/removes a value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. No admin, no scheduled task.
 - **About**, **Quit**
 
+## Updating the app
+
+The tray menu's **App Updates** submenu (and the bold "Update available: vX.Y.Z" item that appears above it once one is found) checks GitHub Releases for this repository, not any package manager. A background check runs automatically once every 24 hours (starting a couple of minutes after launch, so it never competes with first-run WSL provisioning); a tray balloon announces a new version once, and **Check for App Updates...** runs the same check on demand at any time.
+
+Confirming an update downloads the release exe, verifies it against the `.sha256` checksum file published alongside it (the exe itself isn't code-signed, unlike `cloudflared.exe` above), then restarts the app on the new version - Home Assistant instances are untouched, since they run in their own WSL containers independent of this app's process. If the app's own folder isn't writable (e.g. it was copied into `Program Files`), it offers to open the release page instead of trying to replace itself.
+
+**Beta channel.** **App Updates → Include Beta Releases** switches from GitHub's `latest` release to the newest release including prereleases - tag names like `v1.4.0-beta.1`. Turning it off never downgrades you: you stay on whatever you have until a newer *stable* release supersedes it. Which channel a build belongs to is decided entirely by its tag name in `.github/workflows/release.yml`: pushing `vX.Y.Z` publishes a normal release that becomes `latest` for everyone; pushing `vX.Y.Z-beta.N` (or any `-suffix`) publishes it marked as a prerelease, visible only to beta-channel users, without moving `latest` off the current stable build.
+
 ## Process lifetime
 
 Home Assistant runs as a podman container inside the WSL distro, supervised by `conmon` independently of this tray app - confirmed on a real machine: killing the `wsl.exe` process that launched `podman run`, or closing the tray app entirely, does **not** stop the container. Instances are started and stopped with explicit `podman run`/`stop` commands and a lightweight polling watchdog notices if a container stops on its own (crash, `podman stop` from outside the app). This means Home Assistant survives the tray app closing or crashing - by design, since it's meant to keep running like any other home server.

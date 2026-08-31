@@ -21,6 +21,9 @@ public static class AppPaths
 
     public static string SettingsFile { get; } = Path.Combine(Root, "settings.json");
 
+    /// <summary>Scratch space for a downloaded app update before it replaces the running exe - see AppUpdater.</summary>
+    public static string UpdateDir { get; } = Path.Combine(Root, "update");
+
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(Root);

@@ -78,6 +78,17 @@ public sealed class TrayContext : ApplicationContext
     public bool IsHomeAssistantInstalled => _isInstalled;
     public bool IsBusy => _isBusy;
 
+    // ---- app self-update ---------------------------------------------------
+    // See Core/AppUpdateChecker.cs and Core/AppUpdater.cs. Distinct from
+    // UpdateChecker/ApplyVersionAsync above, which are about the Home
+    // Assistant version running inside an instance's container.
+
+    private readonly System.Windows.Forms.Timer _appUpdateTimer;
+    private bool _appUpdateTimerRunningInBackground;
+
+    /// <summary>The release found by the last successful check, if newer than what's installed - null otherwise.</summary>
+    public AppRelease? PendingAppUpdate { get; private set; }
+
     public IReadOnlyList<HassInstance> Instances => _instances;
 
     /// <summary>The instance the tray icon's double-click targets, and the one started after first-run setup.</summary>
@@ -113,8 +124,30 @@ public sealed class TrayContext : ApplicationContext
             Visible = true,
         };
         _notifyIcon.DoubleClick += (_, _) => OpenWebUi(Selected);
+        _notifyIcon.BalloonTipClicked += async (_, _) =>
+        {
+            if (PendingAppUpdate is not null) await CheckForAppUpdatesAsync();
+        };
 
         LogAppEvent("HA Win Server started.");
+
+        // First background check happens 2 minutes after launch, not
+        // immediately - startup can already be mid-way through first-run WSL
+        // provisioning (RunSetupFlow), and there's no rush. After that first
+        // tick the interval widens to 6 hours; CheckForAppUpdatesInBackgroundAsync
+        // itself no-ops unless 24h have passed since the last successful check,
+        // so this just needs to be "frequent enough", not exact.
+        _appUpdateTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromMinutes(2).TotalMilliseconds };
+        _appUpdateTimer.Tick += (_, _) =>
+        {
+            if (!_appUpdateTimerRunningInBackground)
+            {
+                _appUpdateTimerRunningInBackground = true;
+                _appUpdateTimer.Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds;
+            }
+            _ = CheckForAppUpdatesInBackgroundAsync();
+        };
+        _appUpdateTimer.Start();
 
         _ = InitializeAsync();
     }
@@ -1657,6 +1690,221 @@ public sealed class TrayContext : ApplicationContext
         });
     }
 
+    // ---- app self-update ----------------------------------------------------
+
+    public void ToggleAutoCheckAppUpdates()
+    {
+        RootSettings.AppUpdates.AutoCheck = !RootSettings.AppUpdates.AutoCheck;
+        RootSettings.Save();
+    }
+
+    public void ToggleIncludeBetaReleases()
+    {
+        RootSettings.AppUpdates.IncludePrereleases = !RootSettings.AppUpdates.IncludePrereleases;
+
+        // Switching channel invalidates whatever was cached under the other
+        // channel - force a fresh check rather than showing stale state (or
+        // silently reusing "skip this version" against a release from the
+        // channel the user just left).
+        RootSettings.AppUpdates.LastCheckUtc = null;
+        RootSettings.AppUpdates.SkippedVersion = null;
+        RootSettings.Save();
+
+        _ = CheckForAppUpdatesInBackgroundAsync();
+    }
+
+    /// <summary>
+    /// Runs on the timer, silently. Never shows a MessageBox - a failed
+    /// background check is just a missed opportunity, not an error the user
+    /// needs to see. Announces a genuinely new update via a tray balloon,
+    /// once per version.
+    /// </summary>
+    private async Task CheckForAppUpdatesInBackgroundAsync()
+    {
+        var settings = RootSettings.AppUpdates;
+
+        if (!settings.AutoCheck || AppVersion.IsDevelopmentBuild || _isBusy) return;
+        if (settings.LastCheckUtc is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromHours(24)) return;
+
+        var result = await AppUpdateChecker.CheckAsync(settings.IncludePrereleases);
+        if (result is null) return; // network hiccup - try again next tick
+
+        settings.LastCheckUtc = DateTimeOffset.UtcNow;
+        PendingAppUpdate = result.UpdateAvailable ? result.Latest : null;
+        RootSettings.Save();
+
+        if (PendingAppUpdate is not { } release) return;
+        if (release.Version == settings.SkippedVersion) return;
+        if (release.Version == settings.LastNotifiedVersion) return;
+
+        settings.LastNotifiedVersion = release.Version;
+        RootSettings.Save();
+
+        LogAppEvent($"App update available: {release.Version} (installed: {result.InstalledVersion}).");
+
+        _notifyIcon.BalloonTipTitle = "HA Win Server update available";
+        _notifyIcon.BalloonTipText = Truncate(
+            $"Version {release.Version} is available. Open the tray menu to install it.", 240);
+        _notifyIcon.ShowBalloonTip(6000);
+    }
+
+    /// <summary>
+    /// The "Check for App Updates..." menu action, and the handler for the
+    /// balloon/menu entry once a PendingAppUpdate is known. Mirrors
+    /// CheckForUpdatesAsync's UX for Home Assistant instance updates above -
+    /// same shape, GitHub Releases instead of PyPI.
+    /// </summary>
+    public async Task CheckForAppUpdatesAsync(bool userInitiated = true)
+    {
+        if (_isBusy) return;
+
+        if (AppVersion.IsDevelopmentBuild)
+        {
+            if (userInitiated)
+            {
+                MessageBox.Show(
+                    "This is a development build (version 0.0.0-dev) - it never self-updates.",
+                    "HA Win Server",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            return;
+        }
+
+        var settings = RootSettings.AppUpdates;
+        var result = await AppUpdateChecker.CheckAsync(settings.IncludePrereleases);
+        settings.LastCheckUtc = DateTimeOffset.UtcNow;
+
+        if (result is null)
+        {
+            RootSettings.Save();
+            if (userInitiated)
+            {
+                MessageBox.Show(
+                    "Could not reach GitHub to check for updates. Check your network connection.",
+                    "HA Win Server",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            return;
+        }
+
+        PendingAppUpdate = result.UpdateAvailable ? result.Latest : null;
+        RootSettings.Save();
+
+        if (result.Latest is not { } release || !result.UpdateAvailable)
+        {
+            if (userInitiated)
+            {
+                MessageBox.Show(
+                    $"HA Win Server is up to date (version {result.InstalledVersion}).",
+                    "HA Win Server",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            return;
+        }
+
+        if (!AppUpdater.CanSelfUpdate(out var reason))
+        {
+            var openPage = MessageBox.Show(
+                $"HA Win Server {release.Version} is available, but this copy cannot update itself:\n\n{reason}\n\n" +
+                "Open the release page to download it manually?",
+                "Update available",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (openPage == DialogResult.Yes)
+            {
+                Process.Start(new ProcessStartInfo { FileName = release.HtmlUrl, UseShellExecute = true });
+            }
+            return;
+        }
+
+        var notes = Truncate(release.ReleaseNotes.Trim(), 1500);
+        var body =
+            $"HA Win Server {release.Version} is available (installed: {result.InstalledVersion}).\n" +
+            $"Published {release.PublishedAt.LocalDateTime:yyyy-MM-dd}." +
+            (release.IsPrerelease ? " [PRERELEASE]" : "") +
+            (notes.Length > 0 ? $"\n\n{notes}" : "") +
+            "\n\nInstalling will download, verify, and restart HA Win Server. Running Home Assistant " +
+            "instances are not affected - they run in their own containers, independent of this app's process.\n\n" +
+            "Update now?";
+
+        var confirmed = MessageBox.Show(
+            body, "Update available", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+        if (confirmed == DialogResult.Cancel) return;
+        if (confirmed == DialogResult.No)
+        {
+            var skip = MessageBox.Show(
+                $"Skip version {release.Version}? You won't be notified about it again.",
+                "HA Win Server",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (skip == DialogResult.Yes)
+            {
+                settings.SkippedVersion = release.Version;
+                RootSettings.Save();
+            }
+            return;
+        }
+
+        await InstallAppUpdateAsync(release);
+    }
+
+    private async Task InstallAppUpdateAsync(AppRelease release)
+    {
+        var targetExePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(targetExePath))
+        {
+            MessageBox.Show(
+                "Could not determine this app's own executable path - cannot self-update.",
+                "HA Win Server",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        await RunProgressAsync($"Update to {release.Version}", async (window, log) =>
+        {
+            string downloadedPath;
+            try
+            {
+                downloadedPath = await AppUpdater.DownloadAsync(release, s =>
+                {
+                    window.SetStatus(s);
+                    log(s);
+                });
+            }
+            catch (Exception ex)
+            {
+                window.ShowRetryableFailure("Update download failed: " + ex.Message);
+                return;
+            }
+
+            window.ShowSuccess("HA Win Server will now close and restart on the new version.");
+            LogAppEvent($"Installing app update {release.Version} - restarting.");
+
+            // Same reasoning as QuitAsync for cloudflared: it's a direct
+            // child process of this app with no daemon behind it, so it must
+            // be stopped cleanly before this process exits. Unlike QuitAsync,
+            // Home Assistant instances are deliberately left untouched - the
+            // whole point of running them in WSL containers instead of this
+            // process is that they don't depend on it staying open.
+            if (_tunnelSupervisor.State is not TunnelState.Stopped)
+            {
+                await _tunnelSupervisor.StopAsync();
+            }
+
+            AppUpdater.LaunchApply(downloadedPath, targetExePath);
+
+            _notifyIcon.Visible = false;
+            Application.Exit();
+        });
+    }
+
     /// <summary>
     /// Pinned versions mean old images are never overwritten - that is what
     /// makes rollback instant, and also what makes them pile up at roughly
@@ -1741,7 +1989,7 @@ public sealed class TrayContext : ApplicationContext
     public void ShowAbout()
     {
         MessageBox.Show(
-            "HA Win Server\n\n" +
+            $"HA Win Server\nVersion {AppVersion.Current}\n\n" +
             "A tray app that runs Home Assistant's official Container image inside a dedicated " +
             "WSL (Windows Subsystem for Linux) distro, without administrator rights - as long as " +
             "WSL is already set up on this machine.\n\n" +
@@ -2002,6 +2250,7 @@ public sealed class TrayContext : ApplicationContext
     {
         if (disposing)
         {
+            _appUpdateTimer.Dispose();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _menu.Dispose();

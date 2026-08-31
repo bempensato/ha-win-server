@@ -188,6 +188,19 @@ public static class MenuBuilder
         target.Add(BuildTunnelSubmenu(ctx, busy));
 
         target.Add(new ToolStripSeparator());
+
+        if (ctx.PendingAppUpdate is { } pending)
+        {
+            target.Add(new ToolStripMenuItem(
+                $"Update available: {pending.TagName}", null, async (_, _) => await ctx.CheckForAppUpdatesAsync())
+            {
+                Font = new Font(SystemFonts.MenuFont ?? SystemFonts.DefaultFont, FontStyle.Bold),
+            });
+        }
+
+        target.Add(BuildAppUpdatesSubmenu(ctx, busy));
+
+        target.Add(new ToolStripSeparator());
         target.Add(new ToolStripMenuItem("View HA Win Server Log", null, (_, _) => ctx.ViewAppLog()));
 
         var runAtLogin = new ToolStripMenuItem("Run at Login", null, (_, _) => ctx.ToggleRunAtLogin())
@@ -200,6 +213,40 @@ public static class MenuBuilder
         target.Add(new ToolStripSeparator());
         target.Add(new ToolStripMenuItem("About", null, (_, _) => ctx.ShowAbout()));
         target.Add(new ToolStripMenuItem("Quit", null, async (_, _) => await ctx.QuitAsync()));
+    }
+
+    /// <summary>App self-update: manual check, plus the two toggles that live in Core.AppUpdateSettings.</summary>
+    private static ToolStripMenuItem BuildAppUpdatesSubmenu(TrayContext ctx, bool busy)
+    {
+        var root = new ToolStripMenuItem("App Updates");
+        var settings = ctx.RootSettings.AppUpdates;
+
+        root.DropDownItems.Add(new ToolStripMenuItem($"Version {AppVersion.Current}") { Enabled = false });
+        root.DropDownItems.Add(new ToolStripSeparator());
+
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Check for App Updates...", null, async (_, _) => await ctx.CheckForAppUpdatesAsync())
+        {
+            Enabled = !busy,
+        });
+
+        root.DropDownItems.Add(new ToolStripSeparator());
+
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Check Automatically", null, (_, _) => ctx.ToggleAutoCheckAppUpdates())
+        {
+            Checked = settings.AutoCheck,
+            CheckOnClick = false,
+        });
+        root.DropDownItems.Add(new ToolStripMenuItem(
+            "Include Beta Releases", null, (_, _) => ctx.ToggleIncludeBetaReleases())
+        {
+            Checked = settings.IncludePrereleases,
+            CheckOnClick = false,
+            Enabled = !busy,
+        });
+
+        return root;
     }
 
     private static ToolStripMenuItem BuildNetworkSubmenu(
