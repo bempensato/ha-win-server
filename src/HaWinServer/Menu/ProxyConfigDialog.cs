@@ -36,12 +36,14 @@ public sealed class ProxyConfigDialog : Form
     {
         _configYamlPath = configYamlPath;
 
-        // See TunnelSetupDialog's constructor for why this is needed.
+        // See TunnelSetupDialog's constructor for why both of these are
+        // needed: AutoScaleMode.Dpi rescales child controls correctly, but
+        // not the Form's own literal Width/Height, so LogicalToDeviceUnits
+        // does that part explicitly.
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = $"Home Assistant Proxy Settings - {instanceName}";
-        Width = 620;
-        Height = 620;
+        Size = LogicalToDeviceUnits(new Size(620, 620));
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -51,7 +53,7 @@ public sealed class ProxyConfigDialog : Form
         var intro = new Label
         {
             Dock = DockStyle.Top,
-            Height = 70,
+            AutoSize = true,
             Padding = new Padding(12, 10, 12, 0),
             Text = "Without these settings, Home Assistant sees every visitor as the tunnel's internal " +
                    "gateway address - its login-failure ban would then lock out the tunnel itself, and " +
@@ -60,7 +62,7 @@ public sealed class ProxyConfigDialog : Form
                    "automatically if Home Assistant fails to restart.",
         };
 
-        _statusLabel = new Label { Dock = DockStyle.Top, Height = 20, Padding = new Padding(12, 0, 12, 0), ForeColor = SystemColors.GrayText };
+        _statusLabel = new Label { Dock = DockStyle.Top, Height = LogicalToDeviceUnits(20), Padding = new Padding(12, 0, 12, 0), ForeColor = SystemColors.GrayText };
 
         // ---- http: use_x_forwarded_for / trusted_proxies -------------------------
         // Stacked through one top-down FlowLayoutPanel rather than mixing
@@ -88,12 +90,29 @@ public sealed class ProxyConfigDialog : Form
         cidrRow.Controls.Add(cidrLabel);
         cidrRow.Controls.Add(_cidrBox);
 
-        var httpStack = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        // Top, not Fill: httpGroup below is AutoSize (see TunnelSetupDialog's
+        // zoneFlow comment for why an AutoSize container can't also have a
+        // Fill child).
+        var httpStack = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+        };
         httpStack.Controls.Add(_httpCheck);
         httpStack.Controls.Add(cidrRow);
         httpStack.Controls.Add(_httpConflictNote);
 
-        var httpGroup = new GroupBox { Dock = DockStyle.Top, Height = 130, Text = "http:", Padding = new Padding(10, 6, 10, 6) };
+        var httpGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "http:",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         httpGroup.Controls.Add(httpStack);
 
         // ---- homeassistant: external_url -----------------------------------------
@@ -116,17 +135,31 @@ public sealed class ProxyConfigDialog : Form
                    "writing it here locks that field in the UI.",
         };
 
-        var externalUrlStack = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+        var externalUrlStack = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+        };
         externalUrlStack.Controls.Add(_externalUrlCheck);
         externalUrlStack.Controls.Add(_externalUrlBox);
         externalUrlStack.Controls.Add(_externalUrlConflictNote);
         externalUrlStack.Controls.Add(externalUrlNote);
 
-        var externalUrlGroup = new GroupBox { Dock = DockStyle.Top, Height = 150, Text = "homeassistant:", Padding = new Padding(10, 6, 10, 6) };
+        var externalUrlGroup = new GroupBox
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Text = "homeassistant:",
+            Padding = new Padding(10, 6, 10, 6),
+        };
         externalUrlGroup.Controls.Add(externalUrlStack);
 
         // ---- preview ------------------------------------------------------------------
-        var previewLabel = new Label { Dock = DockStyle.Top, Height = 20, Text = "What will be written:" };
+        var previewLabel = new Label { Dock = DockStyle.Top, Height = LogicalToDeviceUnits(20), Text = "What will be written:" };
         _previewBox = new TextBox
         {
             Dock = DockStyle.Fill,
@@ -154,7 +187,7 @@ public sealed class ProxyConfigDialog : Form
         var buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 44,
+            Height = LogicalToDeviceUnits(44),
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(12, 6, 12, 6),
         };

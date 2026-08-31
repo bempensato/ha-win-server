@@ -18,12 +18,14 @@ public sealed class SetupWindow : Form
 
     public SetupWindow()
     {
-        // See TunnelSetupDialog's constructor for why this is needed.
+        // See TunnelSetupDialog's constructor for why both of these are
+        // needed: AutoScaleMode.Dpi rescales child controls correctly, but
+        // not the Form's own literal Width/Height, so LogicalToDeviceUnits
+        // does that part explicitly.
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = "HA Win Server - Setup";
-        Width = 640;
-        Height = 440;
+        Size = LogicalToDeviceUnits(new Size(640, 440));
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -34,7 +36,7 @@ public sealed class SetupWindow : Form
         {
             Text = "Setting up Home Assistant...",
             Dock = DockStyle.Top,
-            Height = 32,
+            Height = LogicalToDeviceUnits(32),
             Font = new Font(Font.FontFamily, 10f, FontStyle.Bold),
             Padding = new Padding(12, 10, 12, 0),
         };
@@ -42,7 +44,7 @@ public sealed class SetupWindow : Form
         _progressBar = new ProgressBar
         {
             Dock = DockStyle.Top,
-            Height = 18,
+            Height = LogicalToDeviceUnits(18),
             Style = ProgressBarStyle.Marquee,
             MarqueeAnimationSpeed = 30,
             Margin = new Padding(12, 0, 12, 0),
@@ -63,7 +65,7 @@ public sealed class SetupWindow : Form
         var buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 44,
+            Height = LogicalToDeviceUnits(44),
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(12, 6, 12, 6),
         };

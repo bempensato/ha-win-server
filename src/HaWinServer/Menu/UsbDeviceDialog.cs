@@ -40,26 +40,24 @@ public sealed class UsbDeviceDialog : Form
         _instanceName = instanceName;
         _assignedElsewhere = assignedElsewhere;
 
-        // See TunnelSetupDialog's constructor for why this is needed: without
-        // it, this hand-built dialog's fixed-size GroupBoxes scale by an
-        // unreliable font-metric ratio instead of the monitor's actual DPI,
-        // which is what produced the wrong-size/clipped-field reports on
-        // Windows 10.
+        // See TunnelSetupDialog's constructor for why both of these are
+        // needed: AutoScaleMode.Dpi rescales child controls correctly, but
+        // not the Form's own literal Width/Height, so LogicalToDeviceUnits
+        // does that part explicitly.
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = $"USB Devices - {instanceName}";
-        Width = 720;
-        Height = 620;
+        Size = LogicalToDeviceUnits(new Size(720, 620));
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        MinimumSize = new Size(640, 520);
+        MinimumSize = LogicalToDeviceUnits(new Size(640, 520));
 
         var intro = new Label
         {
             Dock = DockStyle.Top,
-            Height = 58,
+            AutoSize = true,
             Padding = new Padding(12, 10, 12, 0),
             Text = "WSL is a virtual machine and cannot see USB devices on its own. A device has to be "
                  + "shared with usbipd (once, as administrator), then attached to WSL (after every Windows "
@@ -92,7 +90,7 @@ public sealed class UsbDeviceDialog : Form
         var windowsButtons = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 36,
+            Height = LogicalToDeviceUnits(36),
             FlowDirection = FlowDirection.LeftToRight,
             Padding = new Padding(0, 4, 0, 0),
         };
@@ -100,12 +98,12 @@ public sealed class UsbDeviceDialog : Form
         windowsButtons.Controls.Add(_attachButton);
         windowsButtons.Controls.Add(refreshButton);
 
-        _windowsHint = new Label { Dock = DockStyle.Bottom, Height = 32, ForeColor = SystemColors.GrayText };
+        _windowsHint = new Label { Dock = DockStyle.Bottom, Height = LogicalToDeviceUnits(32), ForeColor = SystemColors.GrayText };
 
         var windowsGroup = new GroupBox
         {
             Dock = DockStyle.Top,
-            Height = 230,
+            Height = LogicalToDeviceUnits(230),
             Text = "1. Windows USB devices (usbipd)",
             Padding = new Padding(10, 6, 10, 8),
         };
@@ -133,7 +131,7 @@ public sealed class UsbDeviceDialog : Form
         _statusLabel = new Label
         {
             Dock = DockStyle.Bottom,
-            Height = 40,
+            Height = LogicalToDeviceUnits(40),
             Padding = new Padding(12, 4, 12, 0),
         };
 
@@ -144,7 +142,7 @@ public sealed class UsbDeviceDialog : Form
         var buttonPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Bottom,
-            Height = 44,
+            Height = LogicalToDeviceUnits(44),
             FlowDirection = FlowDirection.RightToLeft,
             Padding = new Padding(12, 6, 12, 6),
         };
