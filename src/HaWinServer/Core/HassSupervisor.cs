@@ -109,8 +109,10 @@ public sealed class HassSupervisor : IDisposable
                 LastErrorDetail =
                     "These USB devices are assigned to this instance but are not currently present in WSL:\n" +
                     string.Join("\n", missingDevices.Select(d => "  " + d)) +
-                    "\n\nAfter a Windows restart a device has to be handed back to WSL with usbipd. " +
-                    "Use \"Assign USB Device...\" to reattach it.";
+                    "\n\nA device has to be handed back to WSL with usbipd whenever the WSL VM itself " +
+                    "restarts - not just after a Windows reboot, but also when this app restarts Home " +
+                    "Assistant and nothing else keeps the VM warm in between. Use \"Assign USB Device...\" " +
+                    "to reattach it.";
                 SetState(HassState.Error);
                 return;
             }

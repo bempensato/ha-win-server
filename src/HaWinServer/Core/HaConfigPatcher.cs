@@ -414,20 +414,28 @@ public static class HaConfigPatcher
     }
 
     /// <summary>
-    /// Shared tail of Apply/Remove: restart, wait up to 5 minutes (matching
-    /// HassSupervisor.StartAsync's own startup timeout), and if Home
-    /// Assistant never answers, run the caller's rollback (restoring
+    /// Shared tail of Apply/Remove: restart and check whether Home Assistant
+    /// came back up, then if not, run the caller's rollback (restoring
     /// whichever backups it actually made) and restart once more so the
     /// worst case is self-healing rather than a stuck instance.
+    ///
+    /// Reads <see cref="HassSupervisor.State"/> rather than polling
+    /// HealthProbe itself: StartAsync already runs that same probe (up to
+    /// its own 5-minute timeout) before returning, so a second wait here
+    /// would just double it - and, worse, for a start that fails
+    /// synchronously (e.g. a USB device missing from WSL, checked before
+    /// podman is even touched - see HassSupervisor.StartAsync) it used to
+    /// burn a full 5 minutes waiting on a container that was never started,
+    /// twice over once rollback retried it, all while the whole app menu
+    /// stayed disabled (TrayContext._isBusy) - including "Assign USB
+    /// Device...", the one action that would have fixed it.
     /// </summary>
     private static async Task<(bool Success, string Detail)> RestartAndVerifyAsync(
         HassInstance instance, Func<Task> RollbackAsync, Action<string>? log, CancellationToken ct)
     {
         await instance.Supervisor.RestartAsync(ct);
-        var up = await HealthProbe.WaitUntilUpAsync(
-            instance.Settings.Port, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(5), ct);
 
-        if (up)
+        if (instance.Supervisor.State == HassState.Running)
         {
             return (true, "Home Assistant restarted successfully.");
         }
@@ -436,11 +444,9 @@ public static class HaConfigPatcher
         await RollbackAsync();
         await instance.Supervisor.RestartAsync(ct);
 
-        var recovered = await HealthProbe.WaitUntilUpAsync(
-            instance.Settings.Port, TimeSpan.FromSeconds(2), TimeSpan.FromMinutes(5), ct);
-
-        return recovered
+        return instance.Supervisor.State == HassState.Running
             ? (false, "Home Assistant did not accept the change - it has been rolled back automatically and is running again.")
-            : (false, "Home Assistant did not come back up even after rolling back. Check the Home Assistant log.");
+            : (false, "Home Assistant did not come back up even after rolling back.\n" +
+                      (instance.Supervisor.LastErrorDetail ?? "Check the Home Assistant log."));
     }
 }
