@@ -129,7 +129,7 @@ public sealed class TunnelSetupDialog : Form
 
         // ---- 1. API token -----------------------------------------------------
         _tokenBox = new TextBox { Width = 380, UseSystemPasswordChar = true, Text = initialApiToken ?? string.Empty };
-        _connectButton = new Button { Text = "Fetch Zones", Width = 170 };
+        _connectButton = new Button { Text = "Fetch Zones", Width = 170, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
         _connectButton.Click += async (_, _) => await OnConnectAsync();
         _connectStatus = new Label { Dock = DockStyle.Bottom, Height = LogicalToDeviceUnits(24), ForeColor = SystemColors.GrayText };
 
@@ -273,9 +273,18 @@ public sealed class TunnelSetupDialog : Form
         // on failure, keep the dialog open with a message) before closing -
         // setting DialogResult directly on the button would close the form
         // before that check ever ran.
-        _okButton = new Button { Text = "OK", Width = 90, Enabled = false };
+        //
+        // FlatStyle.System on every Button in this file (and the other four
+        // hand-built dialogs): the default FlatStyle.Standard is GDI+-drawn,
+        // and a real Windows 10 screenshot after the sizing fix above showed
+        // that rendering garbled - button labels sliced by a stray line -
+        // once these dialogs were actually being resized post-construction
+        // by AutoScaleMode.Dpi at a non-96 DPI. FlatStyle.System hands the
+        // button to native Windows theming instead, which paints correctly
+        // at any DPI because Windows itself, not GDI+, owns the redraw.
+        _okButton = new Button { Text = "OK", Width = 90, Height = LogicalToDeviceUnits(28), Enabled = false, FlatStyle = FlatStyle.System };
         _okButton.Click += (_, _) => OnOkClicked();
-        var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90 };
+        var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
 
         var buttonPanel = new FlowLayoutPanel
         {

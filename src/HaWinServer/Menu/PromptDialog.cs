@@ -76,6 +76,7 @@ public sealed class PromptDialog : Form
             DialogResult = DialogResult.OK,
             Size = buttonSize,
             Location = new Point(contentWidth - pad - buttonSize.Width, buttonTop),
+            FlatStyle = FlatStyle.System,
         };
         var cancelButton = new Button
         {
@@ -83,6 +84,7 @@ public sealed class PromptDialog : Form
             DialogResult = DialogResult.Cancel,
             Size = buttonSize,
             Location = new Point(contentWidth - pad - buttonSize.Width - LogicalToDeviceUnits(100), buttonTop),
+            FlatStyle = FlatStyle.System,
         };
 
         Controls.Add(promptLabel);

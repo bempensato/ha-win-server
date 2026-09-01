@@ -70,10 +70,10 @@ public sealed class SetupWindow : Form
             Padding = new Padding(12, 6, 12, 6),
         };
 
-        _closeButton = new Button { Text = "Close", Width = 90, Enabled = false };
+        _closeButton = new Button { Text = "Close", Width = 90, Height = LogicalToDeviceUnits(28), Enabled = false, FlatStyle = FlatStyle.System };
         _closeButton.Click += (_, _) => Close();
 
-        _retryButton = new Button { Text = "Retry", Width = 90, Visible = false };
+        _retryButton = new Button { Text = "Retry", Width = 90, Height = LogicalToDeviceUnits(28), Visible = false, FlatStyle = FlatStyle.System };
         _retryButton.Click += (_, _) => RetryRequested?.Invoke(this, EventArgs.Empty);
 
         buttonPanel.Controls.Add(_closeButton);

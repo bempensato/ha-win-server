@@ -78,13 +78,13 @@ public sealed class UsbDeviceDialog : Form
         _windowsList.Columns.Add("State", 160);
         _windowsList.SelectedIndexChanged += (_, _) => UpdateButtons();
 
-        _shareButton = new Button { Text = "Share (admin)", Width = 130, Enabled = false };
+        _shareButton = new Button { Text = "Share (admin)", Width = 130, Height = LogicalToDeviceUnits(28), Enabled = false, FlatStyle = FlatStyle.System };
         _shareButton.Click += async (_, _) => await OnShareAsync();
 
-        _attachButton = new Button { Text = "Attach to WSL", Width = 130, Enabled = false };
+        _attachButton = new Button { Text = "Attach to WSL", Width = 130, Height = LogicalToDeviceUnits(28), Enabled = false, FlatStyle = FlatStyle.System };
         _attachButton.Click += async (_, _) => await OnAttachAsync();
 
-        var refreshButton = new Button { Text = "Refresh", Width = 90 };
+        var refreshButton = new Button { Text = "Refresh", Width = 90, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
         refreshButton.Click += async (_, _) => await RefreshAsync();
 
         var windowsButtons = new FlowLayoutPanel
@@ -135,8 +135,8 @@ public sealed class UsbDeviceDialog : Form
             Padding = new Padding(12, 4, 12, 0),
         };
 
-        var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90 };
-        var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90 };
+        var okButton = new Button { Text = "OK", DialogResult = DialogResult.OK, Width = 90, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
+        var cancelButton = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
         okButton.Click += (_, _) => _selectedDevicePaths = CheckedDevicePaths();
 
         var buttonPanel = new FlowLayoutPanel

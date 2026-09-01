@@ -169,7 +169,7 @@ public sealed class ProxyConfigDialog : Form
             Font = new Font(FontFamily.GenericMonospace, 9f),
         };
 
-        var copyButton = new Button { Text = "Copy Snippet", Width = 110 };
+        var copyButton = new Button { Text = "Copy Snippet", Width = 110, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
         copyButton.Click += (_, _) =>
         {
             try { Clipboard.SetText(_previewBox.Text); } catch (Exception) { /* clipboard busy - not fatal */ }
@@ -180,8 +180,8 @@ public sealed class ProxyConfigDialog : Form
         previewPanel.Controls.Add(previewLabel);
 
         // ---- buttons --------------------------------------------------------------------
-        _applyButton = new Button { Text = "Apply", DialogResult = DialogResult.OK, Width = 90, Enabled = false };
-        var closeButton = new Button { Text = "Close", DialogResult = DialogResult.Cancel, Width = 90 };
+        _applyButton = new Button { Text = "Apply", DialogResult = DialogResult.OK, Width = 90, Height = LogicalToDeviceUnits(28), Enabled = false, FlatStyle = FlatStyle.System };
+        var closeButton = new Button { Text = "Close", DialogResult = DialogResult.Cancel, Width = 90, Height = LogicalToDeviceUnits(28), FlatStyle = FlatStyle.System };
         _applyButton.Click += (_, _) => _result = BuildRequest();
 
         var buttonPanel = new FlowLayoutPanel
